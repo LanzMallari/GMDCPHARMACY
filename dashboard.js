@@ -722,11 +722,13 @@ async function editProduct(productId) {
         document.getElementById('productPrice').value = product.price || 0;
         document.getElementById('productStock').value = product.stock || 0;
         
-        // Format date for input
+        // Format date for input if exists
         if (product.expiryDate) {
             const expiryDate = product.expiryDate.toDate();
             const formattedDate = expiryDate.toISOString().split('T')[0];
             document.getElementById('productExpiry').value = formattedDate;
+        } else {
+            document.getElementById('productExpiry').value = '';
         }
         
         document.getElementById('productDescription').value = product.description || '';
@@ -2672,7 +2674,7 @@ closeModalBtns.forEach(btn => {
     });
 });
 
-// Add Product Form Submit
+// Add Product Form Submit - MODIFIED to make expiry optional
 const productForm = document.getElementById('productForm');
 if (productForm) {
     productForm.addEventListener('submit', async (e) => {
@@ -2681,16 +2683,22 @@ if (productForm) {
         const editId = productForm.dataset.editId;
         
         try {
+            // Create product data object
             const productData = {
                 code: document.getElementById('productCode')?.value || '',
                 name: document.getElementById('productName')?.value || '',
                 category: document.getElementById('productCategory')?.value || '',
                 price: parseFloat(document.getElementById('productPrice')?.value) || 0,
                 stock: parseInt(document.getElementById('productStock')?.value) || 0,
-                expiryDate: Timestamp.fromDate(new Date(document.getElementById('productExpiry')?.value || Date.now())),
                 description: document.getElementById('productDescription')?.value || '',
                 lastUpdated: Timestamp.now()
             };
+            
+            // Only add expiryDate if it's provided (not empty)
+            const expiryInput = document.getElementById('productExpiry')?.value;
+            if (expiryInput) {
+                productData.expiryDate = Timestamp.fromDate(new Date(expiryInput));
+            }
             
             if (editId) {
                 // Update existing product
@@ -2894,3 +2902,340 @@ document.querySelectorAll('.nav-item[data-tab="reports"]').forEach(item => {
         }, 100);
     });
 });
+// Function to open sale details panel
+window.openSalePanel = async function(saleId) {
+    try {
+        const modal = document.getElementById('saleDetailsModal');
+        const panelBody = document.getElementById('salePanelBody');
+        
+        if (!modal || !panelBody) {
+            console.error("Panel elements not found");
+            return;
+        }
+        
+        // Show loading
+        panelBody.innerHTML = `
+            <div style="text-align: center; padding: 50px;">
+                <i class="fas fa-spinner fa-spin" style="font-size: 40px; color: #3498db;"></i>
+                <p style="margin-top: 20px; color: #7f8c8d;">Loading sale details...</p>
+            </div>
+        `;
+        modal.style.display = 'block';
+        
+        // For demo, show sample data
+        if (!saleId || saleId === 'demo') {
+            showSampleSalePanel();
+            return;
+        }
+        
+        // Try to get real data
+        const saleRef = doc(db, "sales", saleId);
+        const saleDoc = await getDoc(saleRef);
+        
+        if (!saleDoc.exists()) {
+            showSampleSalePanel();
+            return;
+        }
+        
+        const sale = saleDoc.data();
+        
+        // Format date
+        const saleDate = sale.date?.toDate ? sale.date.toDate() : new Date();
+        const formattedDate = saleDate.toLocaleDateString('en-US', { 
+            year: 'numeric', 
+            month: 'long', 
+            day: 'numeric',
+            hour: '2-digit', 
+            minute: '2-digit'
+        });
+        
+        // Build panel HTML
+        panelBody.innerHTML = buildSalePanelHTML(sale, formattedDate);
+        
+    } catch (error) {
+        console.error("Error opening sale panel:", error);
+        showSampleSalePanel();
+    }
+}
+
+// Function to close panel
+window.closeSalePanel = function() {
+    const modal = document.getElementById('saleDetailsModal');
+    if (modal) {
+        modal.style.display = 'none';
+    }
+}
+
+// Build panel HTML from sale data
+function buildSalePanelHTML(sale, formattedDate) {
+    const subtotal = sale.subtotal || 0;
+    const tax = sale.tax || 0;
+    const total = sale.total || 0;
+    const amountTendered = sale.amountTendered || 0;
+    const change = sale.change || 0;
+    
+    const itemsHtml = sale.items ? sale.items.map(item => `
+        <div class="item-row">
+            <div class="item-info">
+                <div class="item-name">${item.name}</div>
+                <div class="item-meta">
+                    <span>Code: ${item.code || 'N/A'}</span>
+                    <span class="item-qty">Qty: ${item.quantity}</span>
+                </div>
+            </div>
+            <div class="item-price">₱${(item.price * item.quantity).toFixed(2)}</div>
+        </div>
+    `).join('') : '<p style="text-align: center; color: #7f8c8d;">No items found</p>';
+    
+    return `
+        <!-- Invoice Card -->
+        <div class="invoice-card">
+            <div class="invoice-header">
+                <div class="invoice-number">
+                    ${sale.invoiceNumber || 'N/A'}
+                    <span>${sale.paymentMethod || 'Cash'}</span>
+                </div>
+                <div class="payment-badge">PAID</div>
+            </div>
+            <div class="invoice-details">
+                <div class="detail-row">
+                    <i class="fas fa-calendar-alt"></i>
+                    <strong>Date:</strong>
+                    <span>${formattedDate}</span>
+                </div>
+                <div class="detail-row">
+                    <i class="fas fa-user"></i>
+                    <strong>Cashier:</strong>
+                    <span>${sale.cashierName || 'Unknown'}</span>
+                </div>
+                <div class="detail-row">
+                    <i class="fas fa-id-card"></i>
+                    <strong>Cashier ID:</strong>
+                    <span>${sale.cashierId ? sale.cashierId.slice(-8) : 'N/A'}</span>
+                </div>
+            </div>
+        </div>
+        
+        <!-- Items Card -->
+        <div class="items-card">
+            <div class="items-header">
+                <i class="fas fa-shopping-cart"></i>
+                <h3>Items Purchased</h3>
+            </div>
+            <div class="item-list">
+                ${itemsHtml}
+            </div>
+        </div>
+        
+        <!-- Summary Card -->
+        <div class="summary-card">
+            <div class="summary-row">
+                <span class="summary-label">Subtotal:</span>
+                <span class="summary-value">₱${subtotal.toFixed(2)}</span>
+            </div>
+            <div class="summary-row">
+                <span class="summary-label">Tax (12%):</span>
+                <span class="summary-value">₱${tax.toFixed(2)}</span>
+            </div>
+            <div class="summary-row total-row">
+                <span class="total-label">Total Amount:</span>
+                <span class="total-value">₱${total.toFixed(2)}</span>
+            </div>
+        </div>
+        
+        <!-- Payment Card -->
+        <div class="payment-card">
+            <div class="payment-header">
+                <i class="fas fa-credit-card"></i>
+                <h3>Payment Details</h3>
+            </div>
+            <div class="payment-grid">
+                <div class="payment-item">
+                    <div class="label">Method</div>
+                    <div class="value">${sale.paymentMethod || 'Cash'}</div>
+                </div>
+                <div class="payment-item">
+                    <div class="label">Tendered</div>
+                    <div class="value cash">₱${amountTendered.toFixed(2)}</div>
+                </div>
+                <div class="payment-item">
+                    <div class="label">Change</div>
+                    <div class="value change">₱${change.toFixed(2)}</div>
+                </div>
+            </div>
+        </div>
+        
+        <!-- Action Buttons -->
+        <div class="panel-actions">
+            <button class="panel-btn print" onclick="alert('Print feature coming soon!')">
+                <i class="fas fa-print"></i> Print
+            </button>
+            <button class="panel-btn pdf" onclick="alert('PDF download coming soon!')">
+                <i class="fas fa-file-pdf"></i> PDF
+            </button>
+            <button class="panel-btn close-btn" onclick="closeSalePanel()">
+                <i class="fas fa-times"></i> Close
+            </button>
+        </div>
+        
+        <!-- Footer -->
+        <div class="panel-footer">
+            <i class="fas fa-check-circle" style="color: #27ae60;"></i>
+            Transaction completed successfully
+        </div>
+    `;
+}
+
+// Show sample panel
+function showSampleSalePanel() {
+    const panelBody = document.getElementById('salePanelBody');
+    panelBody.innerHTML = `
+        <!-- Invoice Card -->
+        <div class="invoice-card">
+            <div class="invoice-header">
+                <div class="invoice-number">
+                    INV-260214-0042
+                    <span>Cash</span>
+                </div>
+                <div class="payment-badge">PAID</div>
+            </div>
+            <div class="invoice-details">
+                <div class="detail-row">
+                    <i class="fas fa-calendar-alt"></i>
+                    <strong>Date:</strong>
+                    <span>February 14, 2026 • 03:45 PM</span>
+                </div>
+                <div class="detail-row">
+                    <i class="fas fa-user"></i>
+                    <strong>Cashier:</strong>
+                    <span>Maria Santos</span>
+                </div>
+                <div class="detail-row">
+                    <i class="fas fa-id-card"></i>
+                    <strong>Cashier ID:</strong>
+                    <span>USR-12345</span>
+                </div>
+            </div>
+        </div>
+        
+        <!-- Items Card -->
+        <div class="items-card">
+            <div class="items-header">
+                <i class="fas fa-shopping-cart"></i>
+                <h3>Items Purchased</h3>
+            </div>
+            <div class="item-list">
+                <div class="item-row">
+                    <div class="item-info">
+                        <div class="item-name">Amoxicillin 500mg</div>
+                        <div class="item-meta">
+                            <span>Code: AMX-500</span>
+                            <span class="item-qty">Qty: 2</span>
+                        </div>
+                    </div>
+                    <div class="item-price">₱153.00</div>
+                </div>
+                <div class="item-row">
+                    <div class="item-info">
+                        <div class="item-name">Paracetamol 500mg</div>
+                        <div class="item-meta">
+                            <span>Code: PAR-500</span>
+                            <span class="item-qty">Qty: 3</span>
+                        </div>
+                    </div>
+                    <div class="item-price">₱30.00</div>
+                </div>
+                <div class="item-row">
+                    <div class="item-info">
+                        <div class="item-name">Vitamin C 1000mg</div>
+                        <div class="item-meta">
+                            <span>Code: VIT-C1000</span>
+                            <span class="item-qty">Qty: 1</span>
+                        </div>
+                    </div>
+                    <div class="item-price">₱200.00</div>
+                </div>
+            </div>
+        </div>
+        
+        <!-- Summary Card -->
+        <div class="summary-card">
+            <div class="summary-row">
+                <span class="summary-label">Subtotal:</span>
+                <span class="summary-value">₱383.00</span>
+            </div>
+            <div class="summary-row">
+                <span class="summary-label">Discount (20%):</span>
+                <span class="summary-value" style="color: #e74c3c;">-₱76.60</span>
+            </div>
+            <div class="summary-row">
+                <span class="summary-label">Tax (12%):</span>
+                <span class="summary-value">₱36.77</span>
+            </div>
+            <div class="summary-row total-row">
+                <span class="total-label">Total Amount:</span>
+                <span class="total-value">₱343.17</span>
+            </div>
+        </div>
+        
+        <!-- Payment Card -->
+        <div class="payment-card">
+            <div class="payment-header">
+                <i class="fas fa-credit-card"></i>
+                <h3>Payment Details</h3>
+            </div>
+            <div class="payment-grid">
+                <div class="payment-item">
+                    <div class="label">Method</div>
+                    <div class="value">Cash</div>
+                </div>
+                <div class="payment-item">
+                    <div class="label">Tendered</div>
+                    <div class="value cash">₱500.00</div>
+                </div>
+                <div class="payment-item">
+                    <div class="label">Change</div>
+                    <div class="value change">₱156.83</div>
+                </div>
+            </div>
+        </div>
+        
+        <!-- Action Buttons -->
+        <div class="panel-actions">
+            <button class="panel-btn print" onclick="alert('Print feature coming soon!')">
+                <i class="fas fa-print"></i> Print
+            </button>
+            <button class="panel-btn pdf" onclick="alert('PDF download coming soon!')">
+                <i class="fas fa-file-pdf"></i> PDF
+            </button>
+            <button class="panel-btn close-btn" onclick="closeSalePanel()">
+                <i class="fas fa-times"></i> Close
+            </button>
+        </div>
+        
+        <!-- Footer -->
+        <div class="panel-footer">
+            <i class="fas fa-check-circle" style="color: #27ae60;"></i>
+            Transaction completed successfully
+        </div>
+    `;
+}
+
+// Update your view buttons to use the panel
+document.addEventListener('DOMContentLoaded', function() {
+    document.querySelectorAll('.view-sale, .btn-icon.view-sale').forEach(btn => {
+        btn.addEventListener('click', function(e) {
+            e.preventDefault();
+            const saleId = this.dataset.id;
+            openSalePanel(saleId || 'demo');
+        });
+    });
+});
+
+// Close modal when clicking outside
+window.onclick = function(event) {
+    const modal = document.getElementById('saleDetailsModal');
+    if (event.target === modal) {
+        closeSalePanel();
+    }
+}

@@ -379,8 +379,9 @@
                     </div>
                 </div>
                 <div class="form-group">
-                    <label>Expiry Date</label>
-                    <input type="date" id="productExpiry" required>
+                    <label>Expiry Date(Optional)
+                    </label>
+                    <input type="date" id="productExpiry" >
                 </div>
                 <div class="form-group">
                     <label>Description</label>
@@ -475,6 +476,18 @@
             </div>
         </div>
     </div>
+    <!-- Sale Details Modal - Centered Panel -->
+<div id="saleDetailsModal" class="modal">
+    <div class="modal-content sale-panel">
+        <div class="sale-panel-header">
+            <h2><i class="fas fa-receipt"></i> Sale Details</h2>
+            <span class="close" onclick="closeSalePanel()">&times;</span>
+        </div>
+        <div class="sale-panel-body" id="salePanelBody">
+            <!-- Content will be loaded here -->
+        </div>
+    </div>
+</div>
 
     <script type="module" src="dashboard.js"></script>
 </body>
