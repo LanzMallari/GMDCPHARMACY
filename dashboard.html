@@ -1,0 +1,481 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=yes">
+    <title>Pharmacy Dashboard - GMDC Pharmacy</title>
+    <link rel="stylesheet" href="style.css">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
+    <!-- Add Chart.js for reports -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <!-- Add jsPDF for PDF generation -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+    <!-- Add html2canvas for capturing charts -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
+    <!-- Add autoTable for better table formatting in PDF -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.5.29/jspdf.plugin.autotable.min.js"></script>
+</head>
+<body>
+    <div class="dashboard">
+        <!-- Mobile Header -->
+        <div class="mobile-header">
+            <button class="burger-btn" id="burgerBtn">
+                <i class="fas fa-bars"></i>
+            </button>
+            <div class="mobile-logo">
+                <h2>GMDC BOTICA</h2>
+            </div>
+            <div class="mobile-notification">
+                <i class="fas fa-bell"></i>
+                <span class="badge">3</span>
+            </div>
+        </div>
+
+        <!-- Sidebar -->
+        <div class="sidebar" id="sidebar">
+            <div class="sidebar-header">
+                <h2>GMDC BOTICA</h2>
+                <p>Inventory System</p>
+            </div>
+            <div class="user-profile-sidebar">
+                <div class="user-avatar">
+                    <i class="fas fa-user-circle"></i>
+                </div>
+                <div class="user-info-sidebar">
+                    <div id="sidebarUserName">Loading...</div>
+                    <div id="sidebarUserEmail">Loading...</div>
+                </div>
+            </div>
+            <nav class="sidebar-nav">
+                <a href="#" class="nav-item active" data-tab="dashboard">
+                    <i class="fas fa-tachometer-alt"></i> <span>Dashboard</span>
+                </a>
+                <a href="#" class="nav-item" data-tab="inventory">
+                    <i class="fas fa-pills"></i> <span>Inventory</span>
+                </a>
+                <a href="#" class="nav-item" data-tab="pos">
+                    <i class="fas fa-cash-register"></i> <span>Point of Sale</span>
+                </a>
+                <a href="#" class="nav-item" data-tab="sales">
+                    <i class="fas fa-chart-line"></i> <span>Sales History</span>
+                </a>
+                <a href="#" class="nav-item" data-tab="reports">
+                    <i class="fas fa-file-alt"></i> <span>Reports</span>
+                </a>
+            </nav>
+            <div class="sidebar-footer">
+                <button id="logout" class="logout-btn">
+                    <i class="fas fa-sign-out-alt"></i> <span>Logout</span>
+                </button>
+            </div>
+        </div>
+
+        <!-- Main Content -->
+        <div class="main-content">
+            <!-- Desktop Top Bar (hidden on mobile) -->
+            <div class="desktop-top-bar">
+                <div class="top-bar-left">
+                    <div class="search-bar">
+                        <i class="fas fa-search"></i>
+                        <input type="text" placeholder="Search products...">
+                    </div>
+                </div>
+                <div class="top-bar-actions">
+                    <div class="notification">
+                        <i class="fas fa-bell"></i>
+                        <span class="badge">3</span>
+                    </div>
+                    <div class="date-time">
+                        <span id="currentDateTime"></span>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Mobile Search Bar -->
+            <div class="mobile-search-bar">
+                <i class="fas fa-search"></i>
+                <input type="text" placeholder="Search products...">
+            </div>
+
+            <!-- Welcome Message -->
+            <div class="welcome-message">
+                <h2>Welcome back, <span id="welcomeUserName">User</span>!</h2>
+                <p>Here's what's happening with your pharmacy today.</p>
+            </div>
+
+            <!-- Dashboard Tab Content -->
+            <div id="dashboard-tab" class="tab-content active">
+                <h1 class="page-title">Dashboard Overview</h1>
+                <div class="stats-grid">
+                    <div class="stat-card">
+                        <div class="stat-icon">
+                            <i class="fas fa-boxes"></i>
+                        </div>
+                        <div class="stat-info">
+                            <h3>Total Products</h3>
+                            <p id="totalProducts">0</p>
+                        </div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-icon">
+                            <i class="fas fa-exclamation-triangle"></i>
+                        </div>
+                        <div class="stat-info">
+                            <h3>Low Stock</h3>
+                            <p id="lowStockCount">0</p>
+                        </div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-icon">
+                            <i class="fas fa-dollar-sign"></i>
+                        </div>
+                        <div class="stat-info">
+                            <h3>Today's Sales</h3>
+                            <p id="todaySales">₱0.00</p>
+                        </div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-icon">
+                            <i class="fas fa-clock"></i>
+                        </div>
+                        <div class="stat-info">
+                            <h3>Expiring Soon</h3>
+                            <p id="expiringCount">0</p>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Recent Activities -->
+                <div class="recent-activities">
+                    <h2>Recent Activities</h2>
+                    <div class="activities-list" id="recentActivities">
+                        <!-- Activities will be loaded here -->
+                    </div>
+                </div>
+            </div>
+
+            <!-- Inventory Tab Content -->
+            <div id="inventory-tab" class="tab-content">
+                <div class="content-header">
+                    <h1 class="page-title">Inventory Management</h1>
+                    <button class="btn-primary" id="addProductBtn">
+                        <i class="fas fa-plus"></i> <span class="btn-text">Add Product</span>
+                    </button>
+                </div>
+                
+                <!-- Inventory Filters -->
+                <div class="inventory-filters">
+                    <input type="text" placeholder="Search products..." id="inventorySearch" class="mobile-full-width">
+                    <select id="categoryFilter" class="mobile-full-width">
+                        <option value="">All Categories</option>
+                        <option value="medicines">Medicines</option>
+                        <option value="vitamins">Vitamins</option>
+                        <option value="equipment">Medical Equipment</option>
+                        <option value="personal-care">Personal Care</option>
+                    </select>
+                    <select id="stockFilter" class="mobile-full-width">
+                        <option value="">All Stock</option>
+                        <option value="low">Low Stock</option>
+                        <option value="out">Out of Stock</option>
+                    </select>
+                </div>
+
+                <!-- Inventory Table -->
+                <div class="table-container">
+                    <table class="inventory-table">
+                        <thead>
+                            <tr>
+                                <th>Code</th>
+                                <th>Product</th>
+                                <th>Category</th>
+                                <th>Price</th>
+                                <th>Stock</th>
+                                <th>Expiry</th>
+                                <th>Actions</th>
+                            </tr>
+                        </thead>
+                        <tbody id="inventoryTableBody">
+                            <!-- Inventory items will be loaded here -->
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+
+            <!-- POS Tab Content -->
+            <div id="pos-tab" class="tab-content">
+                <div class="pos-container">
+                    <!-- Products Grid -->
+                    <div class="products-section">
+                        <div class="pos-header">
+                            <h2>Products</h2>
+                            <div class="pos-search">
+                                <i class="fas fa-search"></i>
+                                <input type="text" id="posSearch" placeholder="Search products...">
+                            </div>
+                        </div>
+                        <div class="products-grid" id="productsGrid">
+                            <!-- Products will be loaded here -->
+                        </div>
+                    </div>
+
+                    <!-- Cart Section -->
+                    <div class="cart-section">
+                        <div class="cart-header">
+                            <h2>Shopping Cart</h2>
+                            <button class="btn-void" id="voidButton">
+                                <i class="fas fa-undo"></i> Void/Return
+                            </button>
+                        </div>
+                        <div class="cart-items" id="cartItems">
+                            <!-- Cart items will appear here -->
+                        </div>
+                        <div class="cart-summary">
+                            <div class="cart-total">
+                                <span>Subtotal:</span>
+                                <span id="subtotal">₱0.00</span>
+                            </div>
+                            <div class="cart-total">
+                                <span>Tax (12%):</span>
+                                <span id="tax">₱0.00</span>
+                            </div>
+                            <div class="cart-grand-total">
+                                <span>Total:</span>
+                                <span id="grandTotal">₱0.00</span>
+                            </div>
+                        </div>
+                        <div class="cart-actions">
+                            <button class="btn-secondary" id="clearCartBtn">
+                                <i class="fas fa-trash"></i> Clear
+                            </button>
+                            <button class="btn-primary" id="checkoutBtn">
+                                <i class="fas fa-shopping-cart"></i> Checkout
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Sales Tab Content -->
+            <div id="sales-tab" class="tab-content">
+                <h1 class="page-title">Sales History</h1>
+                <div class="sales-filters">
+                    <div class="filter-group mobile-stack">
+                        <input type="date" id="salesDateFilter" placeholder="Filter by date">
+                        <button class="sort-btn" id="sortSalesBtn">
+                            <i class="fas fa-sort-amount-down"></i> <span class="btn-text">Sort</span>
+                        </button>
+                    </div>
+                    <button class="btn-primary" id="downloadPDFBtn">
+                        <i class="fas fa-file-pdf"></i> <span class="btn-text">Download PDF</span>
+                    </button>
+                </div>
+                <div class="table-container horizontal-scroll">
+                    <table class="sales-table">
+                        <thead>
+                            <tr>
+                                <th>Invoice #</th>
+                                <th>Date</th>
+                                <th>Items</th>
+                                <th>Total</th>
+                                <th>Payment</th>
+                                <th>Cashier</th>
+                                <th>Actions</th>
+                            </tr>
+                        </thead>
+                        <tbody id="salesTableBody">
+                            <!-- Sales history will be loaded here -->
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+
+            <!-- Reports Tab Content -->
+            <div id="reports-tab" class="tab-content">
+                <h1 class="page-title">Sales Reports</h1>
+                <div class="reports-header">
+                    <div class="report-controls">
+                        <div class="month-year-selector">
+                            <select id="reportMonth" class="month-select">
+                                <option value="0">January</option>
+                                <option value="1">February</option>
+                                <option value="2">March</option>
+                                <option value="3">April</option>
+                                <option value="4">May</option>
+                                <option value="5">June</option>
+                                <option value="6">July</option>
+                                <option value="7">August</option>
+                                <option value="8">September</option>
+                                <option value="9">October</option>
+                                <option value="10">November</option>
+                                <option value="11">December</option>
+                            </select>
+                            <select id="reportYear" class="year-select">
+                                <!-- Years will be populated by JavaScript -->
+                            </select>
+                        </div>
+                        <div class="report-type-selector">
+                            <select id="reportPeriod" class="report-period-select">
+                                <option value="daily">Daily</option>
+                                <option value="weekly">Weekly</option>
+                                <option value="monthly">Monthly</option>
+                            </select>
+                        </div>
+                        <button class="btn-primary" id="generateReportBtn">
+                            <i class="fas fa-chart-bar"></i> Generate Report
+                        </button>
+                        <button class="btn-secondary" id="downloadReportPDFBtn">
+                            <i class="fas fa-file-pdf"></i> Download PDF
+                        </button>
+                    </div>
+                </div>
+                <div class="report-container">
+                    <div class="report-chart-container">
+                        <canvas id="reportChart"></canvas>
+                    </div>
+                    <div class="report-stats" id="reportStats">
+                        <!-- Stats will be populated by JavaScript -->
+                    </div>
+                    <div class="report-summary" id="reportSummary">
+                        <!-- Summary will be populated by JavaScript -->
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Add Product Modal -->
+    <div id="productModal" class="modal">
+        <div class="modal-content mobile-modal">
+            <div class="modal-header">
+                <h2>Add New Product</h2>
+                <span class="close">&times;</span>
+            </div>
+            <form id="productForm" class="mobile-form">
+                <div class="form-group">
+                    <label>Product Code</label>
+                    <input type="text" id="productCode" required>
+                </div>
+                <div class="form-group">
+                    <label>Product Name</label>
+                    <input type="text" id="productName" required>
+                </div>
+                <div class="form-group">
+                    <label>Category</label>
+                    <select id="productCategory" required>
+                        <option value="medicines">Medicines</option>
+                        <option value="vitamins">Vitamins</option>
+                        <option value="equipment">Medical Equipment</option>
+                        <option value="personal-care">Personal Care</option>
+                    </select>
+                </div>
+                <div class="form-row mobile-row">
+                    <div class="form-group">
+                        <label>Price</label>
+                        <input type="number" id="productPrice" step="0.01" required>
+                    </div>
+                    <div class="form-group">
+                        <label>Stock</label>
+                        <input type="number" id="productStock" required>
+                    </div>
+                </div>
+                <div class="form-group">
+                    <label>Expiry Date</label>
+                    <input type="date" id="productExpiry" required>
+                </div>
+                <div class="form-group">
+                    <label>Description</label>
+                    <textarea id="productDescription" rows="3"></textarea>
+                </div>
+                <button type="submit" class="btn-primary mobile-btn">Add Product</button>
+            </form>
+        </div>
+    </div>
+
+    <!-- Checkout Modal -->
+    <div id="checkoutModal" class="modal">
+        <div class="modal-content mobile-modal">
+            <div class="modal-header">
+                <h2>Checkout</h2>
+                <span class="close">&times;</span>
+            </div>
+            <div class="checkout-details">
+                <div class="checkout-summary">
+                    <h3>Order Summary</h3>
+                    <div id="checkoutItems"></div>
+                    <div class="checkout-total">
+                        <span>Total Amount:</span>
+                        <span id="checkoutTotal">₱0.00</span>
+                    </div>
+                </div>
+                <div class="payment-section">
+                    <h3>Payment</h3>
+                    <div class="form-group">
+                        <label>Payment Method</label>
+                        <select id="paymentMethod">
+                            <option value="cash">Cash</option>
+                            <option value="card">Credit/Debit Card</option>
+                            <option value="gcash">GCash</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label>Amount Tendered</label>
+                        <input type="number" id="amountTendered" step="0.01">
+                    </div>
+                    <div class="change-amount">
+                        <span>Change:</span>
+                        <span id="changeAmount">₱0.00</span>
+                    </div>
+                </div>
+                <button class="btn-primary mobile-btn" id="processPaymentBtn">
+                    Process Payment
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Return Modal for Void/Return -->
+    <div id="returnModal" class="modal">
+        <div class="modal-content mobile-modal">
+            <div class="modal-header">
+                <h2>Process Return / Void</h2>
+                <span class="close">&times;</span>
+            </div>
+            <div class="return-details">
+                <div class="sale-info" id="returnSaleInfo">
+                    <h3>Select a sale from history or search below</h3>
+                </div>
+                <div class="form-group">
+                    <label>Search Invoice or Product</label>
+                    <input type="text" id="returnSearch" placeholder="Type invoice # or product name...">
+                </div>
+                <div class="search-results" id="returnSearchResults"></div>
+                <div class="selected-return-info" id="selectedReturnInfo" style="display: none;">
+                    <h4>Selected Item for Return</h4>
+                    <p><strong>Invoice:</strong> <span id="returnInvoice"></span></p>
+                    <p><strong>Product:</strong> <span id="returnProductName"></span></p>
+                    <p><strong>Price:</strong> ₱<span id="returnPrice">0.00</span></p>
+                    <p><strong>Available Quantity:</strong> <span id="returnAvailableQty">0</span></p>
+                    <div class="form-group">
+                        <label>Return Quantity</label>
+                        <input type="number" id="returnQuantity" min="1" value="1">
+                    </div>
+                    <div class="form-group">
+                        <label>Reason for Return</label>
+                        <select id="returnReason">
+                            <option value="damaged">Damaged Product</option>
+                            <option value="expired">Expired Product</option>
+                            <option value="wrong_item">Wrong Item Delivered</option>
+                            <option value="customer_return">Customer Return</option>
+                            <option value="void">Void Transaction</option>
+                            <option value="other">Other</option>
+                        </select>
+                    </div>
+                    <button class="btn-primary" id="processReturnBtn">Process Return</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script type="module" src="dashboard.js"></script>
+</body>
+</html>
