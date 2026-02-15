@@ -46,6 +46,7 @@ let unsubscribeProducts = null; // For real-time listener
 let currentUserData = null; // Store user data globally
 let currentSortOrder = 'desc'; // 'desc' for newest first, 'asc' for oldest first
 let reportChart = null; // For chart instance
+let currentDiscount = 0; // 0 = no discount, 20 = senior/PWD discount
 
 // Fetch and display user data
 async function fetchUserData(userId) {
@@ -456,6 +457,37 @@ async function loadDashboardStats() {
         const returnSnapshot = await getDocs(returnQuery);
         const returnCount = returnSnapshot.size;
         
+        // Make stat cards clickable
+        const statCards = document.querySelectorAll('.stat-card');
+        if (statCards.length >= 4) {
+            // Low Stock card (second card)
+            statCards[1].style.cursor = 'pointer';
+            statCards[1].onclick = () => openLowStockModal();
+            
+            // Today's Sales card (third card)
+            statCards[2].style.cursor = 'pointer';
+            statCards[2].onclick = () => openTodaySalesModal();
+            
+            // Add hover effect
+            statCards[1].addEventListener('mouseenter', function() {
+                this.style.transform = 'translateY(-5px)';
+                this.style.boxShadow = '0 8px 20px rgba(0,0,0,0.15)';
+            });
+            statCards[1].addEventListener('mouseleave', function() {
+                this.style.transform = '';
+                this.style.boxShadow = '';
+            });
+            
+            statCards[2].addEventListener('mouseenter', function() {
+                this.style.transform = 'translateY(-5px)';
+                this.style.boxShadow = '0 8px 20px rgba(0,0,0,0.15)';
+            });
+            statCards[2].addEventListener('mouseleave', function() {
+                this.style.transform = '';
+                this.style.boxShadow = '';
+            });
+        }
+        
         // Load recent activities
         await loadRecentActivities();
         
@@ -627,6 +659,288 @@ function getActivityIcon(type) {
     return icons[type] || 'fa-info-circle';
 }
 
+// ========== DASHBOARD MODAL FUNCTIONS ==========
+
+// Open Low Stock Modal
+async function openLowStockModal() {
+    try {
+        const modal = document.getElementById('lowStockModal');
+        const modalBody = document.getElementById('lowStockModalBody');
+        
+        if (!modal || !modalBody) {
+            console.error("Modal elements not found");
+            return;
+        }
+        
+        // Show loading
+        modalBody.innerHTML = `
+            <div class="modal-loading">
+                <i class="fas fa-spinner fa-spin"></i>
+                <p>Loading low stock products...</p>
+            </div>
+        `;
+        modal.style.display = 'block';
+        
+        // Get all products with low stock (stock > 0 and stock < 10)
+        const productsSnapshot = await getDocs(collection(db, "products"));
+        const lowStockProducts = [];
+        
+        productsSnapshot.forEach(doc => {
+            const product = doc.data();
+            if (product.stock > 0 && product.stock < 10) {
+                lowStockProducts.push({
+                    id: doc.id,
+                    ...product
+                });
+            }
+        });
+        
+        // Sort by stock (lowest first)
+        lowStockProducts.sort((a, b) => a.stock - b.stock);
+        
+        if (lowStockProducts.length === 0) {
+            modalBody.innerHTML = `
+                <div class="modal-empty">
+                    <i class="fas fa-check-circle" style="font-size: 48px; color: #27ae60;"></i>
+                    <p>No low stock products found!</p>
+                    <p style="font-size: 14px; color: #7f8c8d; margin-top: 10px;">All products have sufficient stock levels.</p>
+                </div>
+            `;
+            return;
+        }
+        
+        // Build the modal content
+        let html = `
+            <div class="modal-stats-summary">
+                <div class="modal-stat">
+                    <span class="modal-stat-label">Total Low Stock:</span>
+                    <span class="modal-stat-value">${lowStockProducts.length}</span>
+                </div>
+                <div class="modal-stat">
+                    <span class="modal-stat-label">Critical (Stock < 5):</span>
+                    <span class="modal-stat-value critical">${lowStockProducts.filter(p => p.stock < 5).length}</span>
+                </div>
+            </div>
+            <div class="modal-items-container">
+        `;
+        
+        lowStockProducts.forEach(product => {
+            const stockClass = product.stock < 5 ? 'critical-stock' : 'warning-stock';
+            const expiryClass = product.expiryDate ? (new Date(product.expiryDate.toDate()) < new Date() ? 'expired' : '') : '';
+            
+            html += `
+                <div class="modal-item">
+                    <div class="modal-item-info">
+                        <div class="modal-item-name">
+                            <strong>${product.name || 'Unnamed'}</strong>
+                            ${product.code ? `<span class="item-code">${product.code}</span>` : ''}
+                        </div>
+                        <div class="modal-item-details">
+                            <span class="item-category"><i class="fas fa-tag"></i> ${product.category || 'N/A'}</span>
+                            <span class="item-price"><i class="fas fa-dollar-sign"></i> ₱${(product.price || 0).toFixed(2)}</span>
+                            <span class="item-expiry ${expiryClass}"><i class="fas fa-calendar-alt"></i> ${product.expiryDate ? formatDate(product.expiryDate) : 'No expiry'}</span>
+                        </div>
+                    </div>
+                    <div class="modal-item-stock ${stockClass}">
+                        <span class="stock-badge">Stock: ${product.stock}</span>
+                        <button class="btn-icon-small" onclick="editProduct('${product.id}')" title="Restock">
+                            <i class="fas fa-plus-circle"></i>
+                        </button>
+                    </div>
+                </div>
+            `;
+        });
+        
+        html += `
+            </div>
+            <div class="modal-footer">
+                <button class="btn-primary" onclick="window.location.href='#'; document.querySelector('[data-tab=\"inventory\"]').click();">
+                    <i class="fas fa-pills"></i> Go to Inventory
+                </button>
+            </div>
+        `;
+        
+        modalBody.innerHTML = html;
+        
+    } catch (error) {
+        console.error("Error opening low stock modal:", error);
+        const modalBody = document.getElementById('lowStockModalBody');
+        if (modalBody) {
+            modalBody.innerHTML = `
+                <div class="modal-error">
+                    <i class="fas fa-exclamation-circle" style="font-size: 48px; color: #e74c3c;"></i>
+                    <p>Error loading low stock products</p>
+                    <p style="font-size: 14px; color: #7f8c8d; margin-top: 10px;">${error.message}</p>
+                </div>
+            `;
+        }
+    }
+}
+
+// Open Today's Sales Modal
+async function openTodaySalesModal() {
+    try {
+        const modal = document.getElementById('todaySalesModal');
+        const modalBody = document.getElementById('todaySalesModalBody');
+        
+        if (!modal || !modalBody) {
+            console.error("Modal elements not found");
+            return;
+        }
+        
+        // Show loading
+        modalBody.innerHTML = `
+            <div class="modal-loading">
+                <i class="fas fa-spinner fa-spin"></i>
+                <p>Loading today's sales...</p>
+            </div>
+        `;
+        modal.style.display = 'block';
+        
+        // Get today's sales
+        const today = new Date();
+        today.setHours(0, 0, 0, 0);
+        const tomorrow = new Date(today);
+        tomorrow.setDate(tomorrow.getDate() + 1);
+        
+        const salesQuery = query(
+            collection(db, "sales"),
+            where("date", ">=", Timestamp.fromDate(today)),
+            where("date", "<", Timestamp.fromDate(tomorrow)),
+            orderBy("date", "desc")
+        );
+        
+        const salesSnapshot = await getDocs(salesQuery);
+        
+        if (salesSnapshot.empty) {
+            modalBody.innerHTML = `
+                <div class="modal-empty">
+                    <i class="fas fa-shopping-cart" style="font-size: 48px; color: #3498db;"></i>
+                    <p>No sales today yet!</p>
+                    <p style="font-size: 14px; color: #7f8c8d; margin-top: 10px;">Start selling to see transactions here.</p>
+                </div>
+            `;
+            return;
+        }
+        
+        // Calculate totals
+        let totalSales = 0;
+        let totalItems = 0;
+        const sales = [];
+        
+        salesSnapshot.forEach(doc => {
+            const sale = doc.data();
+            totalSales += sale.total || 0;
+            
+            let itemsCount = 0;
+            if (sale.items && Array.isArray(sale.items)) {
+                itemsCount = sale.items.reduce((sum, item) => sum + (item.quantity || 0), 0);
+            }
+            totalItems += itemsCount;
+            
+            sales.push({
+                id: doc.id,
+                ...sale,
+                itemsCount
+            });
+        });
+        
+        // Build the modal content
+        let html = `
+            <div class="modal-stats-summary">
+                <div class="modal-stat">
+                    <span class="modal-stat-label">Total Transactions:</span>
+                    <span class="modal-stat-value">${sales.length}</span>
+                </div>
+                <div class="modal-stat">
+                    <span class="modal-stat-label">Total Items Sold:</span>
+                    <span class="modal-stat-value">${totalItems}</span>
+                </div>
+                <div class="modal-stat highlight">
+                    <span class="modal-stat-label">Total Sales:</span>
+                    <span class="modal-stat-value">₱${totalSales.toFixed(2)}</span>
+                </div>
+            </div>
+            <div class="modal-items-container">
+        `;
+        
+        sales.forEach(sale => {
+            const saleDate = sale.date?.toDate ? sale.date.toDate() : new Date();
+            const timeStr = saleDate.toLocaleTimeString('en-US', {
+                hour: '2-digit',
+                minute: '2-digit',
+                second: '2-digit'
+            });
+            
+            const itemsPreview = sale.items ? sale.items.slice(0, 2).map(item => 
+                `${item.name} x${item.quantity}`
+            ).join(', ') : '';
+            
+            const moreItems = sale.items && sale.items.length > 2 ? ` +${sale.items.length - 2} more` : '';
+            
+            html += `
+                <div class="modal-item sale-item" onclick="viewSaleDetails('${sale.id}')">
+                    <div class="modal-item-info">
+                        <div class="modal-item-name">
+                            <strong>${sale.invoiceNumber || '#' + sale.id.slice(-8).toUpperCase()}</strong>
+                            <span class="sale-time">${timeStr}</span>
+                        </div>
+                        <div class="modal-item-details">
+                            <span class="item-cashier"><i class="fas fa-user"></i> ${sale.cashierName || 'Unknown'}</span>
+                            <span class="item-payment"><i class="fas fa-credit-card"></i> ${sale.paymentMethod || 'Cash'}</span>
+                            <span class="item-items"><i class="fas fa-box"></i> ${itemsPreview}${moreItems}</span>
+                        </div>
+                    </div>
+                    <div class="modal-item-amount">
+                        <span class="sale-amount">₱${(sale.total || 0).toFixed(2)}</span>
+                        <button class="btn-icon-small" onclick="event.stopPropagation(); viewSaleDetails('${sale.id}')" title="View Details">
+                            <i class="fas fa-eye"></i>
+                        </button>
+                    </div>
+                </div>
+            `;
+        });
+        
+        html += `
+            </div>
+            <div class="modal-footer">
+                <button class="btn-primary" onclick="window.location.href='#'; document.querySelector('[data-tab=\"sales\"]').click();">
+                    <i class="fas fa-chart-line"></i> View All Sales
+                </button>
+            </div>
+        `;
+        
+        modalBody.innerHTML = html;
+        
+    } catch (error) {
+        console.error("Error opening today's sales modal:", error);
+        const modalBody = document.getElementById('todaySalesModalBody');
+        if (modalBody) {
+            modalBody.innerHTML = `
+                <div class="modal-error">
+                    <i class="fas fa-exclamation-circle" style="font-size: 48px; color: #e74c3c;"></i>
+                    <p>Error loading today's sales</p>
+                    <p style="font-size: 14px; color: #7f8c8d; margin-top: 10px;">${error.message}</p>
+                </div>
+            `;
+        }
+    }
+}
+
+// Close modal function
+function closeModal(modalId) {
+    const modal = document.getElementById(modalId);
+    if (modal) {
+        modal.style.display = 'none';
+    }
+}
+
+// Make functions globally available
+window.openLowStockModal = openLowStockModal;
+window.openTodaySalesModal = openTodaySalesModal;
+window.closeModal = closeModal;
+window.editProduct = editProduct;
+
 // Load Inventory
 async function loadInventory() {
     try {
@@ -722,13 +1036,11 @@ async function editProduct(productId) {
         document.getElementById('productPrice').value = product.price || 0;
         document.getElementById('productStock').value = product.stock || 0;
         
-        // Format date for input if exists
+        // Format date for input
         if (product.expiryDate) {
             const expiryDate = product.expiryDate.toDate();
             const formattedDate = expiryDate.toISOString().split('T')[0];
             document.getElementById('productExpiry').value = formattedDate;
-        } else {
-            document.getElementById('productExpiry').value = '';
         }
         
         document.getElementById('productDescription').value = product.description || '';
@@ -913,11 +1225,12 @@ function addToCart(productId) {
     updateCartDisplay();
 }
 
-// Update Cart Display
+// Update Cart Display with Discount
 function updateCartDisplay() {
     const cartItems = document.getElementById('cartItems');
     const subtotalEl = document.getElementById('subtotal');
-    const taxEl = document.getElementById('tax');
+    const discountEl = document.getElementById('discount');
+    const discountAmountEl = document.getElementById('discountAmount');
     const grandTotalEl = document.getElementById('grandTotal');
     
     if (!cartItems) return;
@@ -928,7 +1241,8 @@ function updateCartDisplay() {
     if (cart.length === 0) {
         cartItems.innerHTML = '<p class="empty-cart">Cart is empty</p>';
         if (subtotalEl) subtotalEl.textContent = '₱0.00';
-        if (taxEl) taxEl.textContent = '₱0.00';
+        if (discountEl) discountEl.textContent = '₱0.00';
+        if (discountAmountEl) discountAmountEl.textContent = '₱0.00';
         if (grandTotalEl) grandTotalEl.textContent = '₱0.00';
         return;
     }
@@ -992,11 +1306,14 @@ function updateCartDisplay() {
         });
     });
     
-    const tax = subtotal * 0.12; // 12% VAT
-    const grandTotal = subtotal + tax;
+    // Calculate discount
+    const discountPercentage = currentDiscount;
+    const discountAmount = subtotal * (discountPercentage / 100);
+    const grandTotal = subtotal - discountAmount;
     
     if (subtotalEl) subtotalEl.textContent = `₱${subtotal.toFixed(2)}`;
-    if (taxEl) taxEl.textContent = `₱${tax.toFixed(2)}`;
+    if (discountEl) discountEl.textContent = `${discountPercentage}%`;
+    if (discountAmountEl) discountAmountEl.textContent = `-₱${discountAmount.toFixed(2)}`;
     if (grandTotalEl) grandTotalEl.textContent = `₱${grandTotal.toFixed(2)}`;
 }
 
@@ -1092,19 +1409,22 @@ if (checkoutBtn) {
     });
 }
 
-// Update Checkout Modal with product names
+// Update Checkout Modal with product names and discount
 function updateCheckoutModal() {
     const checkoutItems = document.getElementById('checkoutItems');
+    const checkoutSubtotal = document.getElementById('checkoutSubtotal');
+    const checkoutDiscount = document.getElementById('checkoutDiscount');
+    const checkoutDiscountAmount = document.getElementById('checkoutDiscountAmount');
     const checkoutTotal = document.getElementById('checkoutTotal');
     
     if (!checkoutItems || !checkoutTotal) return;
     
-    let total = 0;
+    let subtotal = 0;
     checkoutItems.innerHTML = '';
     
     cart.forEach(item => {
         const itemTotal = item.price * item.quantity;
-        total += itemTotal;
+        subtotal += itemTotal;
         
         const itemDiv = document.createElement('div');
         itemDiv.className = 'checkout-item';
@@ -1118,26 +1438,52 @@ function updateCheckoutModal() {
         checkoutItems.appendChild(itemDiv);
     });
     
-    checkoutTotal.textContent = `₱${(total * 1.12).toFixed(2)}`; // Including tax
+    // Calculate discount
+    const discountPercentage = currentDiscount;
+    const discountAmount = subtotal * (discountPercentage / 100);
+    const grandTotal = subtotal - discountAmount;
+    
+    if (checkoutSubtotal) checkoutSubtotal.textContent = `₱${subtotal.toFixed(2)}`;
+    if (checkoutDiscount) checkoutDiscount.textContent = `${discountPercentage}%`;
+    if (checkoutDiscountAmount) checkoutDiscountAmount.textContent = `-₱${discountAmount.toFixed(2)}`;
+    if (checkoutTotal) checkoutTotal.textContent = `₱${grandTotal.toFixed(2)}`;
+    
+    // Update amount tendered calculation
+    updateChangeAmount();
 }
 
 // Calculate change
+function updateChangeAmount() {
+    const amountTendered = document.getElementById('amountTendered');
+    const checkoutTotal = document.getElementById('checkoutTotal');
+    const changeAmount = document.getElementById('changeAmount');
+    
+    if (amountTendered && checkoutTotal && changeAmount) {
+        const amount = parseFloat(amountTendered.value) || 0;
+        const total = parseFloat(checkoutTotal.textContent.replace('₱', ''));
+        const change = amount - total;
+        changeAmount.textContent = `₱${change >= 0 ? change.toFixed(2) : '0.00'}`;
+    }
+}
+
 const amountTendered = document.getElementById('amountTendered');
 if (amountTendered) {
-    amountTendered.addEventListener('input', (e) => {
-        const amount = parseFloat(e.target.value) || 0;
-        const checkoutTotal = document.getElementById('checkoutTotal');
-        const changeAmount = document.getElementById('changeAmount');
-        
-        if (checkoutTotal && changeAmount) {
-            const total = parseFloat(checkoutTotal.textContent.replace('₱', ''));
-            const change = amount - total;
-            changeAmount.textContent = `₱${change >= 0 ? change.toFixed(2) : '0.00'}`;
+    amountTendered.addEventListener('input', updateChangeAmount);
+}
+
+// Discount dropdown change handler
+const discountSelect = document.getElementById('discountSelect');
+if (discountSelect) {
+    discountSelect.addEventListener('change', (e) => {
+        currentDiscount = parseInt(e.target.value) || 0;
+        updateCartDisplay();
+        if (document.getElementById('checkoutModal').style.display === 'block') {
+            updateCheckoutModal();
         }
     });
 }
 
-// Process Payment with stock validation
+// Process Payment with discount
 const processPaymentBtn = document.getElementById('processPaymentBtn');
 if (processPaymentBtn) {
     processPaymentBtn.addEventListener('click', async () => {
@@ -1187,6 +1533,12 @@ if (processPaymentBtn) {
             // Get cashier name
             const cashierName = document.getElementById('sidebarUserName')?.textContent || 'Unknown';
             
+            // Calculate subtotal and discount
+            const subtotal = cart.reduce((sum, item) => sum + (item.price * item.quantity), 0);
+            const discountPercentage = currentDiscount;
+            const discountAmount = subtotal * (discountPercentage / 100);
+            const totalAmount = subtotal - discountAmount;
+            
             // Create sale record
             const saleData = {
                 invoiceNumber: invoiceNumber,
@@ -1197,12 +1549,13 @@ if (processPaymentBtn) {
                     quantity: item.quantity,
                     subtotal: item.price * item.quantity
                 })),
-                subtotal: cart.reduce((sum, item) => sum + (item.price * item.quantity), 0),
-                tax: cart.reduce((sum, item) => sum + (item.price * item.quantity), 0) * 0.12,
-                total: total,
+                subtotal: subtotal,
+                discountPercentage: discountPercentage,
+                discountAmount: discountAmount,
+                total: totalAmount,
                 paymentMethod: method,
                 amountTendered: amount,
-                change: amount - total,
+                change: amount - totalAmount,
                 date: Timestamp.now(),
                 cashierId: loggedInUserId,
                 cashierName: cashierName,
@@ -1245,9 +1598,10 @@ if (processPaymentBtn) {
             }
             
             // Add sale activity
+            let discountText = discountPercentage > 0 ? ` (${discountPercentage}% discount applied)` : '';
             await addDoc(collection(db, "activities"), {
                 type: 'sale',
-                description: `Sale #${invoiceNumber}: ${cart.length} items for ₱${total.toFixed(2)}`,
+                description: `Sale #${invoiceNumber}: ${cart.length} items for ₱${totalAmount.toFixed(2)}${discountText}`,
                 timestamp: Timestamp.now(),
                 userId: loggedInUserId
             });
@@ -1256,6 +1610,8 @@ if (processPaymentBtn) {
             
             // Clear cart and close modal
             cart = [];
+            currentDiscount = 0; // Reset discount
+            if (discountSelect) discountSelect.value = '0';
             updateCartDisplay();
             
             const modal = document.getElementById('checkoutModal');
@@ -1536,6 +1892,7 @@ Invoice: ${sale.invoiceNumber}
 Date: ${formatDate(sale.date)}
 Cashier: ${sale.cashierName}
 Payment: ${sale.paymentMethod}
+Discount: ${sale.discountPercentage || 0}%
 ════════════════════════
 ITEMS:
 `;
@@ -1546,7 +1903,7 @@ ITEMS:
         
         details += `════════════════════════
 Subtotal: ₱${sale.subtotal.toFixed(2)}
-Tax (12%): ₱${sale.tax.toFixed(2)}
+Discount (${sale.discountPercentage || 0}%): -₱${(sale.discountAmount || 0).toFixed(2)}
 Total: ₱${sale.total.toFixed(2)}
 Amount Tendered: ₱${sale.amountTendered.toFixed(2)}
 Change: ₱${sale.change.toFixed(2)}`;
@@ -1864,8 +2221,7 @@ async function processReturn() {
         }
         
         const returnAmount = price * returnQuantity;
-        const returnTax = returnAmount * 0.12;
-        const returnTotal = returnAmount + returnTax;
+        const returnTotal = returnAmount; // No tax now
         
         // Get sale reference
         const saleRef = doc(db, "sales", saleId);
@@ -1894,8 +2250,6 @@ async function processReturn() {
             price: price,
             quantity: returnQuantity,
             amount: returnAmount,
-            tax: returnTax,
-            total: returnTotal,
             reason: returnReason,
             date: Timestamp.now(),
             cashierId: loggedInUserId,
@@ -1940,8 +2294,7 @@ async function processReturn() {
         
         await updateDoc(saleRef, {
             returns: saleReturns,
-            total: sale.total - returnTotal,
-            tax: sale.tax - returnTax,
+            total: sale.total - returnAmount,
             subtotal: sale.subtotal - returnAmount,
             lastUpdated: Timestamp.now()
         });
@@ -1949,7 +2302,7 @@ async function processReturn() {
         // Add return activity
         await addDoc(collection(db, "activities"), {
             type: 'return',
-            description: `Return #${returnId}: ${returnQuantity} x ${productName} - ₱${returnTotal.toFixed(2)} refunded`,
+            description: `Return #${returnId}: ${returnQuantity} x ${productName} - ₱${returnAmount.toFixed(2)} refunded`,
             timestamp: Timestamp.now(),
             userId: loggedInUserId
         });
@@ -2112,10 +2465,10 @@ async function downloadSalesPDF() {
     }
 }
 
-// Download Reports Tab PDF
+// Download Reports Tab PDF (Enhanced with Product Sales Breakdown)
 async function downloadReportPDF() {
     try {
-        showNotification('Generating report PDF...', 'info');
+        showNotification('Generating comprehensive PDF report...', 'info');
         
         const selectedMonth = parseInt(document.getElementById('reportMonth')?.value || new Date().getMonth());
         const selectedYear = parseInt(document.getElementById('reportYear')?.value || new Date().getFullYear());
@@ -2143,7 +2496,10 @@ async function downloadReportPDF() {
             averageSale = parseFloat(statsCards[2]?.querySelector('p')?.textContent?.replace('₱', '') || 0);
         }
         
-        // Create new PDF document
+        // Get product sales breakdown data
+        const productSalesData = await getProductSalesData(selectedMonth, selectedYear);
+        
+        // Create new PDF document (portrait for better product list display)
         const { jsPDF } = window.jspdf;
         const doc = new jsPDF({
             orientation: 'portrait',
@@ -2151,67 +2507,188 @@ async function downloadReportPDF() {
             format: 'a4'
         });
         
+        let yPos = 15;
+        
         // Add header
         doc.setFontSize(20);
         doc.setTextColor(44, 62, 80);
-        doc.text('GMDC BOTICA - Sales Report', 14, 15);
+        doc.text('GMDC BOTICA - Comprehensive Sales Report', 14, yPos);
+        yPos += 8;
         
         // Add report info
         doc.setFontSize(14);
         doc.setTextColor(52, 152, 219);
-        doc.text(`${monthNames[selectedMonth]} ${selectedYear} - ${period.charAt(0).toUpperCase() + period.slice(1)} Report`, 14, 25);
+        doc.text(`${monthNames[selectedMonth]} ${selectedYear} - ${period.charAt(0).toUpperCase() + period.slice(1)} Report`, 14, yPos);
+        yPos += 7;
         
         // Add date and time
         doc.setFontSize(10);
         doc.setTextColor(127, 140, 141);
         const now = new Date();
-        doc.text(`Generated on: ${formatDateForPDF(now)}`, 14, 32);
+        doc.text(`Generated on: ${formatDateForPDF(now)}`, 14, yPos);
+        yPos += 5;
         
         // Get cashier name
         const cashierName = document.getElementById('sidebarUserName')?.textContent || 'Unknown';
-        doc.text(`Generated by: ${cashierName}`, 14, 37);
+        doc.text(`Generated by: ${cashierName}`, 14, yPos);
+        yPos += 10;
         
         // Add summary stats
-        doc.setFontSize(12);
-        doc.setTextColor(0, 0, 0);
-        doc.text('Summary Statistics:', 14, 45);
+        doc.setFontSize(14);
+        doc.setTextColor(44, 62, 80);
+        doc.text('Summary Statistics', 14, yPos);
+        yPos += 7;
         
         doc.setFontSize(11);
-        doc.text(`Total Sales: ₱${totalSales.toFixed(2)}`, 20, 52);
-        doc.text(`Number of Transactions: ${transactions}`, 20, 58);
-        doc.text(`Average Sale: ₱${averageSale.toFixed(2)}`, 20, 64);
+        doc.setTextColor(0, 0, 0);
+        doc.text(`Total Sales: ₱${totalSales.toFixed(2)}`, 20, yPos);
+        yPos += 6;
+        doc.text(`Number of Transactions: ${transactions}`, 20, yPos);
+        yPos += 6;
+        doc.text(`Average Sale: ₱${averageSale.toFixed(2)}`, 20, yPos);
+        yPos += 10;
         
         // Add chart as image
         try {
             const chartImage = chartCanvas.toDataURL('image/png');
-            doc.addImage(chartImage, 'PNG', 14, 70, 180, 80);
+            doc.addImage(chartImage, 'PNG', 14, yPos, 180, 80);
+            yPos += 85;
         } catch (error) {
             console.error("Error adding chart to PDF:", error);
+            yPos += 10;
+        }
+        
+        // Add Product Sales Breakdown
+        if (productSalesData.length > 0) {
+            doc.setFontSize(14);
+            doc.setTextColor(44, 62, 80);
+            doc.text('Product Sales Breakdown', 14, yPos);
+            yPos += 7;
+            
+            // Prepare product sales table
+            const productTableColumn = ["Product Name", "Qty Sold", "Revenue (₱)", "% of Total"];
+            const productTableRows = [];
+            
+            let totalItemsSold = 0;
+            productSalesData.forEach(p => {
+                totalItemsSold += p.quantity;
+            });
+            
+            productSalesData.forEach(product => {
+                const percentage = totalItemsSold > 0 ? ((product.quantity / totalItemsSold) * 100).toFixed(1) : 0;
+                productTableRows.push([
+                    product.name,
+                    product.quantity.toString(),
+                    product.revenue.toFixed(2),
+                    percentage + '%'
+                ]);
+            });
+            
+            doc.autoTable({
+                head: [productTableColumn],
+                body: productTableRows,
+                startY: yPos,
+                theme: 'striped',
+                headStyles: {
+                    fillColor: [52, 152, 219],
+                    textColor: [255, 255, 255],
+                    fontStyle: 'bold'
+                },
+                columnStyles: {
+                    0: { cellWidth: 70 },
+                    1: { cellWidth: 30, halign: 'center' },
+                    2: { cellWidth: 40, halign: 'right' },
+                    3: { cellWidth: 30, halign: 'center' }
+                }
+            });
+            
+            // Update yPos after table
+            yPos = doc.lastAutoTable.finalY + 10;
         }
         
         // Add footer
-        doc.setFontSize(8);
-        doc.setTextColor(150, 150, 150);
-        doc.text(
-            'GMDC BOTICA Pharmacy Management System',
-            14,
-            doc.internal.pageSize.height - 10
-        );
-        doc.text(
-            `Page 1 of 1`,
-            doc.internal.pageSize.width - 20,
-            doc.internal.pageSize.height - 10
-        );
+        const pageCount = doc.internal.getNumberOfPages();
+        for (let i = 1; i <= pageCount; i++) {
+            doc.setPage(i);
+            doc.setFontSize(8);
+            doc.setTextColor(150, 150, 150);
+            doc.text(
+                `Page ${i} of ${pageCount}`,
+                doc.internal.pageSize.width - 20,
+                doc.internal.pageSize.height - 10
+            );
+            doc.text(
+                'GMDC BOTICA Pharmacy Management System',
+                14,
+                doc.internal.pageSize.height - 10
+            );
+        }
         
         // Save PDF
-        const fileName = `${period}_report_${monthNames[selectedMonth]}_${selectedYear}_${formatDateForFileName(now)}.pdf`;
+        const fileName = `comprehensive_report_${monthNames[selectedMonth]}_${selectedYear}_${formatDateForFileName(now)}.pdf`;
         doc.save(fileName);
         
-        showNotification('Report PDF downloaded successfully!', 'success');
+        showNotification('Comprehensive PDF report downloaded successfully!', 'success');
         
     } catch (error) {
         console.error("Error generating report PDF:", error);
-        showNotification('Error generating report PDF', 'error');
+        showNotification('Error generating PDF report', 'error');
+    }
+}
+
+// Helper function to get product sales data for PDF
+async function getProductSalesData(selectedMonth, selectedYear) {
+    try {
+        // Create date range for selected month
+        const startDate = new Date(selectedYear, selectedMonth, 1);
+        startDate.setHours(0, 0, 0, 0);
+        
+        const endDate = new Date(selectedYear, selectedMonth + 1, 1);
+        endDate.setHours(0, 0, 0, 0);
+        
+        // Get all sales for the selected month
+        const salesQuery = query(
+            collection(db, "sales"),
+            where("date", ">=", Timestamp.fromDate(startDate)),
+            where("date", "<", Timestamp.fromDate(endDate))
+        );
+        
+        const salesSnapshot = await getDocs(salesQuery);
+        
+        // Aggregate product sales
+        const productSales = {};
+        
+        salesSnapshot.forEach(doc => {
+            const sale = doc.data();
+            if (sale.items && Array.isArray(sale.items)) {
+                sale.items.forEach(item => {
+                    const productName = item.name || 'Unknown Product';
+                    if (!productSales[productName]) {
+                        productSales[productName] = {
+                            quantity: 0,
+                            revenue: 0
+                        };
+                    }
+                    productSales[productName].quantity += item.quantity || 0;
+                    productSales[productName].revenue += (item.price * item.quantity) || 0;
+                });
+            }
+        });
+        
+        // Convert to array and sort by quantity sold
+        const productSalesArray = Object.entries(productSales).map(([name, data]) => ({
+            name,
+            quantity: data.quantity,
+            revenue: data.revenue
+        }));
+        
+        productSalesArray.sort((a, b) => b.quantity - a.quantity);
+        
+        return productSalesArray;
+        
+    } catch (error) {
+        console.error("Error getting product sales data:", error);
+        return [];
     }
 }
 
@@ -2483,6 +2960,9 @@ async function generateReport() {
         // Display report
         displayFixedReport(period, labels, data, totalSales, totalTransactions, averageSale, selectedMonth, selectedYear);
         
+        // Now get product sales breakdown
+        await loadProductSalesBreakdown(selectedMonth, selectedYear);
+        
     } catch (error) {
         console.error("Error generating report:", error);
         const reportContent = document.getElementById('reportStats');
@@ -2491,6 +2971,121 @@ async function generateReport() {
         }
         showNotification('Error generating report', 'error');
     }
+}
+
+// Load Product Sales Breakdown
+async function loadProductSalesBreakdown(selectedMonth, selectedYear) {
+    try {
+        const productSalesContainer = document.getElementById('productSalesBreakdown');
+        if (!productSalesContainer) return;
+        
+        // Create date range for selected month
+        const startDate = new Date(selectedYear, selectedMonth, 1);
+        startDate.setHours(0, 0, 0, 0);
+        
+        const endDate = new Date(selectedYear, selectedMonth + 1, 1);
+        endDate.setHours(0, 0, 0, 0);
+        
+        // Get all sales for the selected month
+        const salesQuery = query(
+            collection(db, "sales"),
+            where("date", ">=", Timestamp.fromDate(startDate)),
+            where("date", "<", Timestamp.fromDate(endDate))
+        );
+        
+        const salesSnapshot = await getDocs(salesQuery);
+        
+        // Aggregate product sales
+        const productSales = {};
+        let totalItemsSold = 0;
+        
+        salesSnapshot.forEach(doc => {
+            const sale = doc.data();
+            if (sale.items && Array.isArray(sale.items)) {
+                sale.items.forEach(item => {
+                    const productName = item.name || 'Unknown Product';
+                    if (!productSales[productName]) {
+                        productSales[productName] = {
+                            quantity: 0,
+                            revenue: 0,
+                            productId: item.productId || 'unknown'
+                        };
+                    }
+                    productSales[productName].quantity += item.quantity || 0;
+                    productSales[productName].revenue += (item.price * item.quantity) || 0;
+                    totalItemsSold += item.quantity || 0;
+                });
+            }
+        });
+        
+        // Convert to array and sort by quantity sold (descending)
+        const productSalesArray = Object.entries(productSales).map(([name, data]) => ({
+            name,
+            quantity: data.quantity,
+            revenue: data.revenue
+        }));
+        
+        productSalesArray.sort((a, b) => b.quantity - a.quantity);
+        
+        // Display product sales breakdown
+        displayProductSalesBreakdown(productSalesArray, totalItemsSold);
+        
+    } catch (error) {
+        console.error("Error loading product sales breakdown:", error);
+        const productSalesContainer = document.getElementById('productSalesBreakdown');
+        if (productSalesContainer) {
+            productSalesContainer.innerHTML = '<p class="error">Error loading product sales</p>';
+        }
+    }
+}
+
+// Display Product Sales Breakdown
+function displayProductSalesBreakdown(productSales, totalItemsSold) {
+    const container = document.getElementById('productSalesBreakdown');
+    if (!container) return;
+    
+    if (productSales.length === 0) {
+        container.innerHTML = '<p class="no-data">No product sales data for this period</p>';
+        return;
+    }
+    
+    let html = `
+        <div class="product-sales-header">
+            <h3><i class="fas fa-chart-pie"></i> Product Sales Breakdown</h3>
+            <p>Total Items Sold: ${totalItemsSold}</p>
+        </div>
+        <div class="product-sales-table-container">
+            <table class="product-sales-table">
+                <thead>
+                    <tr>
+                        <th>Product Name</th>
+                        <th>Quantity Sold</th>
+                        <th>Revenue (₱)</th>
+                        <th>% of Total</th>
+                    </tr>
+                </thead>
+                <tbody>
+    `;
+    
+    productSales.forEach(product => {
+        const percentage = totalItemsSold > 0 ? ((product.quantity / totalItemsSold) * 100).toFixed(1) : 0;
+        html += `
+            <tr>
+                <td>${product.name}</td>
+                <td><strong>${product.quantity}</strong> pcs</td>
+                <td>₱${product.revenue.toFixed(2)}</td>
+                <td>${percentage}%</td>
+            </tr>
+        `;
+    });
+    
+    html += `
+                </tbody>
+            </table>
+        </div>
+    `;
+    
+    container.innerHTML = html;
 }
 
 // Display report with chart
@@ -2674,7 +3269,35 @@ closeModalBtns.forEach(btn => {
     });
 });
 
-// Add Product Form Submit - MODIFIED to make expiry optional
+// Close dashboard modals
+const closeLowStockModal = document.querySelector('#lowStockModal .close');
+if (closeLowStockModal) {
+    closeLowStockModal.addEventListener('click', () => {
+        document.getElementById('lowStockModal').style.display = 'none';
+    });
+}
+
+const closeTodaySalesModal = document.querySelector('#todaySalesModal .close');
+if (closeTodaySalesModal) {
+    closeTodaySalesModal.addEventListener('click', () => {
+        document.getElementById('todaySalesModal').style.display = 'none';
+    });
+}
+
+// Close modals when clicking outside
+window.addEventListener('click', (e) => {
+    const lowStockModal = document.getElementById('lowStockModal');
+    const todaySalesModal = document.getElementById('todaySalesModal');
+    
+    if (e.target === lowStockModal) {
+        lowStockModal.style.display = 'none';
+    }
+    if (e.target === todaySalesModal) {
+        todaySalesModal.style.display = 'none';
+    }
+});
+
+// Add Product Form Submit
 const productForm = document.getElementById('productForm');
 if (productForm) {
     productForm.addEventListener('submit', async (e) => {
@@ -2683,22 +3306,16 @@ if (productForm) {
         const editId = productForm.dataset.editId;
         
         try {
-            // Create product data object
             const productData = {
                 code: document.getElementById('productCode')?.value || '',
                 name: document.getElementById('productName')?.value || '',
                 category: document.getElementById('productCategory')?.value || '',
                 price: parseFloat(document.getElementById('productPrice')?.value) || 0,
                 stock: parseInt(document.getElementById('productStock')?.value) || 0,
+                expiryDate: Timestamp.fromDate(new Date(document.getElementById('productExpiry')?.value || Date.now())),
                 description: document.getElementById('productDescription')?.value || '',
                 lastUpdated: Timestamp.now()
             };
-            
-            // Only add expiryDate if it's provided (not empty)
-            const expiryInput = document.getElementById('productExpiry')?.value;
-            if (expiryInput) {
-                productData.expiryDate = Timestamp.fromDate(new Date(expiryInput));
-            }
             
             if (editId) {
                 // Update existing product
@@ -2847,6 +3464,21 @@ document.addEventListener('DOMContentLoaded', () => {
             downloadReportPDF();
         });
     }
+
+    // Add close button listeners for dashboard modals
+    const lowStockCloseBtn = document.querySelector('#lowStockModal .close');
+    if (lowStockCloseBtn) {
+        lowStockCloseBtn.addEventListener('click', () => {
+            document.getElementById('lowStockModal').style.display = 'none';
+        });
+    }
+    
+    const todaySalesCloseBtn = document.querySelector('#todaySalesModal .close');
+    if (todaySalesCloseBtn) {
+        todaySalesCloseBtn.addEventListener('click', () => {
+            document.getElementById('todaySalesModal').style.display = 'none';
+        });
+    }
 });
 
 // Initialize dashboard on load
@@ -2863,6 +3495,15 @@ document.addEventListener('DOMContentLoaded', () => {
         if (tabId === 'pos') loadProducts();
         if (tabId === 'sales') loadSalesHistory('desc');
         if (tabId === 'reports') loadReportsTab();
+    }
+
+    // Initialize discount select
+    const discountSelect = document.getElementById('discountSelect');
+    if (discountSelect) {
+        discountSelect.addEventListener('change', (e) => {
+            currentDiscount = parseInt(e.target.value) || 0;
+            updateCartDisplay();
+        });
     }
 });
 
@@ -2902,6 +3543,7 @@ document.querySelectorAll('.nav-item[data-tab="reports"]').forEach(item => {
         }, 100);
     });
 });
+
 // Function to open sale details panel
 window.openSalePanel = async function(saleId) {
     try {
@@ -2969,7 +3611,8 @@ window.closeSalePanel = function() {
 // Build panel HTML from sale data
 function buildSalePanelHTML(sale, formattedDate) {
     const subtotal = sale.subtotal || 0;
-    const tax = sale.tax || 0;
+    const discountPercentage = sale.discountPercentage || 0;
+    const discountAmount = sale.discountAmount || 0;
     const total = sale.total || 0;
     const amountTendered = sale.amountTendered || 0;
     const change = sale.change || 0;
@@ -3033,10 +3676,12 @@ function buildSalePanelHTML(sale, formattedDate) {
                 <span class="summary-label">Subtotal:</span>
                 <span class="summary-value">₱${subtotal.toFixed(2)}</span>
             </div>
+            ${discountPercentage > 0 ? `
             <div class="summary-row">
-                <span class="summary-label">Tax (12%):</span>
-                <span class="summary-value">₱${tax.toFixed(2)}</span>
+                <span class="summary-label">Discount (${discountPercentage}%):</span>
+                <span class="summary-value" style="color: #e74c3c;">-₱${discountAmount.toFixed(2)}</span>
             </div>
+            ` : ''}
             <div class="summary-row total-row">
                 <span class="total-label">Total Amount:</span>
                 <span class="total-value">₱${total.toFixed(2)}</span>
@@ -3168,13 +3813,9 @@ function showSampleSalePanel() {
                 <span class="summary-label">Discount (20%):</span>
                 <span class="summary-value" style="color: #e74c3c;">-₱76.60</span>
             </div>
-            <div class="summary-row">
-                <span class="summary-label">Tax (12%):</span>
-                <span class="summary-value">₱36.77</span>
-            </div>
             <div class="summary-row total-row">
                 <span class="total-label">Total Amount:</span>
-                <span class="total-value">₱343.17</span>
+                <span class="total-value">₱306.40</span>
             </div>
         </div>
         
@@ -3195,7 +3836,7 @@ function showSampleSalePanel() {
                 </div>
                 <div class="payment-item">
                     <div class="label">Change</div>
-                    <div class="value change">₱156.83</div>
+                    <div class="value change">₱193.60</div>
                 </div>
             </div>
         </div>

@@ -335,6 +335,13 @@
                     <div class="report-stats" id="reportStats">
                         <!-- Stats will be populated by JavaScript -->
                     </div>
+                    
+                    <!-- Product Sales Breakdown Section -->
+                    <div class="product-sales-breakdown" id="productSalesBreakdown">
+                        <!-- Product sales will be loaded here -->
+                        <div class="loading">Loading product sales data...</div>
+                    </div>
+                    
                     <div class="report-summary" id="reportSummary">
                         <!-- Summary will be populated by JavaScript -->
                     </div>
@@ -379,9 +386,8 @@
                     </div>
                 </div>
                 <div class="form-group">
-                    <label>Expiry Date(Optional)
-                    </label>
-                    <input type="date" id="productExpiry" >
+                    <label>Expiry Date (Optional)</label>
+                    <input type="date" id="productExpiry">
                 </div>
                 <div class="form-group">
                     <label>Description</label>
@@ -393,46 +399,66 @@
     </div>
 
     <!-- Checkout Modal -->
-    <div id="checkoutModal" class="modal">
-        <div class="modal-content mobile-modal">
-            <div class="modal-header">
-                <h2>Checkout</h2>
-                <span class="close">&times;</span>
-            </div>
-            <div class="checkout-details">
-                <div class="checkout-summary">
-                    <h3>Order Summary</h3>
-                    <div id="checkoutItems"></div>
-                    <div class="checkout-total">
-                        <span>Total Amount:</span>
-                        <span id="checkoutTotal">₱0.00</span>
-                    </div>
+    <!-- Checkout Modal -->
+<div id="checkoutModal" class="modal">
+    <div class="modal-content mobile-modal">
+        <div class="modal-header">
+            <h2>Checkout</h2>
+            <span class="close">&times;</span>
+        </div>
+        <div class="checkout-details">
+            <div class="checkout-summary">
+                <h3>Order Summary</h3>
+                <div id="checkoutItems"></div>
+                <div class="checkout-total-row">
+                    <span>Subtotal:</span>
+                    <span id="checkoutSubtotal">₱0.00</span>
                 </div>
-                <div class="payment-section">
-                    <h3>Payment</h3>
-                    <div class="form-group">
-                        <label>Payment Method</label>
-                        <select id="paymentMethod">
-                            <option value="cash">Cash</option>
-                            <option value="card">Credit/Debit Card</option>
-                            <option value="gcash">GCash</option>
+                <div class="checkout-discount-row">
+                    <span>Discount:</span>
+                    <span id="checkoutDiscount">0%</span>
+                    <span id="checkoutDiscountAmount">-₱0.00</span>
+                </div>
+                <div class="checkout-total">
+                    <span>Total Amount:</span>
+                    <span id="checkoutTotal">₱0.00</span>
+                </div>
+            </div>
+            <div class="payment-section">
+                <h3>Payment</h3>
+                <div class="form-group">
+                    <label>Discount Type</label>
+                    <div class="discount-selector">
+                        <select id="discountSelect">
+                            <option value="0">No Discount</option>
+                            <option value="20">Senior Citizen (20%)</option>
+                            <option value="20">PWD (20%)</option>
                         </select>
                     </div>
-                    <div class="form-group">
-                        <label>Amount Tendered</label>
-                        <input type="number" id="amountTendered" step="0.01">
-                    </div>
-                    <div class="change-amount">
-                        <span>Change:</span>
-                        <span id="changeAmount">₱0.00</span>
-                    </div>
                 </div>
-                <button class="btn-primary mobile-btn" id="processPaymentBtn">
-                    Process Payment
-                </button>
+                <div class="form-group">
+                    <label>Payment Method</label>
+                    <select id="paymentMethod">
+                        <option value="cash">Cash</option>
+                        <option value="card">Credit/Debit Card</option>
+                        <option value="gcash">GCash</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label>Amount Tendered</label>
+                    <input type="number" id="amountTendered" step="0.01">
+                </div>
+                <div class="change-amount">
+                    <span>Change:</span>
+                    <span id="changeAmount">₱0.00</span>
+                </div>
             </div>
+            <button class="btn-primary mobile-btn" id="processPaymentBtn">
+                Process Payment
+            </button>
         </div>
     </div>
+</div>
 
     <!-- Return Modal for Void/Return -->
     <div id="returnModal" class="modal">
@@ -476,15 +502,48 @@
             </div>
         </div>
     </div>
+
     <!-- Sale Details Modal - Centered Panel -->
-<div id="saleDetailsModal" class="modal">
-    <div class="modal-content sale-panel">
-        <div class="sale-panel-header">
-            <h2><i class="fas fa-receipt"></i> Sale Details</h2>
-            <span class="close" onclick="closeSalePanel()">&times;</span>
+    <div id="saleDetailsModal" class="modal">
+        <div class="modal-content sale-panel">
+            <div class="sale-panel-header">
+                <h2><i class="fas fa-receipt"></i> Sale Details</h2>
+                <span class="close" onclick="closeSalePanel()">&times;</span>
+            </div>
+            <div class="sale-panel-body" id="salePanelBody">
+                <!-- Content will be loaded here -->
+            </div>
         </div>
-        <div class="sale-panel-body" id="salePanelBody">
-            <!-- Content will be loaded here -->
+    </div><!-- Low Stock Modal -->
+<div id="lowStockModal" class="modal">
+    <div class="modal-content dashboard-modal">
+        <div class="modal-header">
+            <h2><i class="fas fa-exclamation-triangle" style="color: #f39c12;"></i> Low Stock Products</h2>
+            <span class="close">&times;</span>
+        </div>
+        <div class="modal-body" id="lowStockModalBody">
+            <!-- Content will be loaded dynamically -->
+            <div class="modal-loading">
+                <i class="fas fa-spinner fa-spin"></i>
+                <p>Loading low stock products...</p>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Today's Sales Modal -->
+<div id="todaySalesModal" class="modal">
+    <div class="modal-content dashboard-modal">
+        <div class="modal-header">
+            <h2><i class="fas fa-chart-line" style="color: #27ae60;"></i> Today's Sales</h2>
+            <span class="close">&times;</span>
+        </div>
+        <div class="modal-body" id="todaySalesModalBody">
+            <!-- Content will be loaded dynamically -->
+            <div class="modal-loading">
+                <i class="fas fa-spinner fa-spin"></i>
+                <p>Loading today's sales...</p>
+            </div>
         </div>
     </div>
 </div>
