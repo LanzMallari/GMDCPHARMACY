@@ -48,6 +48,10 @@ let currentSortOrder = 'desc'; // 'desc' for newest first, 'asc' for oldest firs
 let reportChart = null; // For chart instance
 let currentDiscount = 0; // 0 = no discount, 20 = senior/PWD discount
 
+// ===== FLAGS TO PREVENT DOUBLE PROCESSING =====
+let isProcessingPayment = false; // Flag to prevent double payment processing
+let isProcessingReturn = false; // Flag to prevent double return processing
+
 // Fetch and display user data
 async function fetchUserData(userId) {
     try {
@@ -296,22 +300,48 @@ document.querySelectorAll('.nav-item').forEach(item => {
     });
 });
 
+// ===== UTILITY FUNCTIONS =====
+// Debounce function to limit search calls
+function debounce(func, wait) {
+    let timeout;
+    return function executedFunction(...args) {
+        const later = () => {
+            clearTimeout(timeout);
+            func(...args);
+        };
+        clearTimeout(timeout);
+        timeout = setTimeout(later, wait);
+    };
+}
+
+// Throttle function to limit execution rate
+function throttle(func, limit) {
+    let inThrottle;
+    return function(...args) {
+        if (!inThrottle) {
+            func.apply(this, args);
+            inThrottle = true;
+            setTimeout(() => inThrottle = false, limit);
+        }
+    };
+}
+
 // Search functionality for POS
 const posSearch = document.getElementById('posSearch');
 if (posSearch) {
-    posSearch.addEventListener('input', (e) => {
+    posSearch.addEventListener('input', debounce((e) => {
         const searchTerm = e.target.value.toLowerCase().trim();
         filterProducts(searchTerm);
-    });
+    }, 300));
 }
 
 // Search functionality for Inventory
 const inventorySearch = document.getElementById('inventorySearch');
 if (inventorySearch) {
-    inventorySearch.addEventListener('input', (e) => {
+    inventorySearch.addEventListener('input', debounce((e) => {
         const searchTerm = e.target.value.toLowerCase().trim();
         filterInventory(searchTerm);
-    });
+    }, 300));
 }
 
 // Filter products in POS
@@ -777,7 +807,6 @@ async function openLowStockModal() {
     }
 }
 
-// Open Today's Sales Modal
 // Open Today's Sales Modal with Refund Option
 async function openTodaySalesModal() {
     try {
@@ -1268,6 +1297,7 @@ async function openRefundFromSale(saleId) {
         showNotification('Error opening refund', 'error');
     }
 }
+
 // Close modal function
 function closeModal(modalId) {
     const modal = document.getElementById(modalId);
@@ -1279,6 +1309,8 @@ function closeModal(modalId) {
 // Make functions globally available
 window.openLowStockModal = openLowStockModal;
 window.openTodaySalesModal = openTodaySalesModal;
+window.viewSaleDetailsModal = viewSaleDetailsModal;
+window.openRefundFromSale = openRefundFromSale;
 window.closeModal = closeModal;
 window.editProduct = editProduct;
 
@@ -1723,7 +1755,7 @@ if (clearCartBtn) {
 // Checkout Button
 const checkoutBtn = document.getElementById('checkoutBtn');
 if (checkoutBtn) {
-    checkoutBtn.addEventListener('click', () => {
+    checkoutBtn.addEventListener('click', throttle(() => {
         if (cart.length === 0) {
             showNotification('Cart is empty!', 'error');
             return;
@@ -1747,7 +1779,7 @@ if (checkoutBtn) {
                 updateCheckoutModal();
             }
         }
-    });
+    }, 1000));
 }
 
 // Update Checkout Modal with product names and discount
@@ -1824,10 +1856,18 @@ if (discountSelect) {
     });
 }
 
-// Process Payment with discount
+// Process Payment with discount - FIXED to prevent double processing
 const processPaymentBtn = document.getElementById('processPaymentBtn');
 if (processPaymentBtn) {
-    processPaymentBtn.addEventListener('click', async () => {
+    processPaymentBtn.addEventListener('click', async function(e) {
+        e.preventDefault();
+        
+        // Prevent double processing
+        if (isProcessingPayment) {
+            showNotification('Payment is already being processed...', 'info');
+            return;
+        }
+        
         const paymentMethod = document.getElementById('paymentMethod');
         const amountTendered = document.getElementById('amountTendered');
         const checkoutTotal = document.getElementById('checkoutTotal');
@@ -1842,6 +1882,12 @@ if (processPaymentBtn) {
             showNotification('Insufficient amount!', 'error');
             return;
         }
+        
+        // Set processing flag and disable button
+        isProcessingPayment = true;
+        const originalText = processPaymentBtn.textContent;
+        processPaymentBtn.disabled = true;
+        processPaymentBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Processing...';
         
         // Double-check stock before processing payment
         let stockValid = true;
@@ -1864,6 +1910,9 @@ if (processPaymentBtn) {
         }
         
         if (!stockValid) {
+            isProcessingPayment = false;
+            processPaymentBtn.disabled = false;
+            processPaymentBtn.textContent = originalText;
             return;
         }
         
@@ -1985,6 +2034,11 @@ if (processPaymentBtn) {
         } catch (error) {
             console.error("Error processing payment:", error);
             showNotification('Error processing payment. Please try again.', 'error');
+        } finally {
+            // Reset processing flag and button
+            isProcessingPayment = false;
+            processPaymentBtn.disabled = false;
+            processPaymentBtn.textContent = originalText;
         }
     });
 }
@@ -2340,19 +2394,6 @@ if (returnSearch) {
     }, 300));
 }
 
-// Debounce function to limit search calls
-function debounce(func, wait) {
-    let timeout;
-    return function executedFunction(...args) {
-        const later = () => {
-            clearTimeout(timeout);
-            func(...args);
-        };
-        clearTimeout(timeout);
-        timeout = setTimeout(later, wait);
-    };
-}
-
 // Search sales for return
 async function searchSalesForReturn(searchTerm) {
     try {
@@ -2543,9 +2584,17 @@ function selectProductForReturn(saleId, productId, productName, price, maxQuanti
     selectedInfo.style.display = 'block';
 }
 
-// Process Return
-async function processReturn() {
-    try {
+// Process Return - FIXED to prevent double processing
+const processReturnBtn = document.getElementById('processReturnBtn');
+if (processReturnBtn) {
+    processReturnBtn.addEventListener('click', async function(e) {
+        e.preventDefault();
+        
+        if (isProcessingReturn) {
+            showNotification('Return is already being processed...', 'info');
+            return;
+        }
+        
         const selectedInfo = document.getElementById('selectedReturnInfo');
         const saleId = selectedInfo.dataset.saleId;
         const productId = selectedInfo.dataset.productId;
@@ -2561,118 +2610,130 @@ async function processReturn() {
             return;
         }
         
-        const returnAmount = price * returnQuantity;
-        const returnTotal = returnAmount; // No tax now
+        isProcessingReturn = true;
+        const originalText = processReturnBtn.textContent;
+        processReturnBtn.disabled = true;
+        processReturnBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Processing...';
         
-        // Get sale reference
-        const saleRef = doc(db, "sales", saleId);
-        const saleDoc = await getDoc(saleRef);
-        
-        if (!saleDoc.exists()) {
-            showNotification('Sale not found', 'error');
-            return;
-        }
-        
-        const sale = saleDoc.data();
-        
-        // Generate return ID
-        const returnId = await generateReturnId();
-        
-        // Get cashier name
-        const cashierName = document.getElementById('sidebarUserName')?.textContent || 'Unknown';
-        
-        // Create return record
-        const returnData = {
-            returnId: returnId,
-            originalSaleId: saleId,
-            originalInvoiceNumber: sale.invoiceNumber,
-            productId: productId,
-            productName: productName,
-            price: price,
-            quantity: returnQuantity,
-            amount: returnAmount,
-            reason: returnReason,
-            date: Timestamp.now(),
-            cashierId: loggedInUserId,
-            cashierName: cashierName,
-            status: 'completed'
-        };
-        
-        await addDoc(collection(db, "returns"), returnData);
-        
-        // Update product stock (add back the returned quantity)
-        const productRef = doc(db, "products", productId);
-        const productDoc = await getDoc(productRef);
-        
-        if (productDoc.exists()) {
-            const currentStock = productDoc.data().stock;
-            const newStock = currentStock + returnQuantity;
+        try {
+            const returnAmount = price * returnQuantity;
             
-            await updateDoc(productRef, {
-                stock: newStock,
+            // Get sale reference
+            const saleRef = doc(db, "sales", saleId);
+            const saleDoc = await getDoc(saleRef);
+            
+            if (!saleDoc.exists()) {
+                showNotification('Sale not found', 'error');
+                isProcessingReturn = false;
+                processReturnBtn.disabled = false;
+                processReturnBtn.textContent = originalText;
+                return;
+            }
+            
+            const sale = saleDoc.data();
+            
+            // Check if already returned
+            if (sale.returns && sale.returns.some(r => r.productId === productId)) {
+                showNotification('This item has already been returned', 'error');
+                isProcessingReturn = false;
+                processReturnBtn.disabled = false;
+                processReturnBtn.textContent = originalText;
+                return;
+            }
+            
+            // Generate return ID
+            const returnId = await generateReturnId();
+            
+            // Get cashier name
+            const cashierName = document.getElementById('sidebarUserName')?.textContent || 'Unknown';
+            
+            // Create return record
+            const returnData = {
+                returnId: returnId,
+                originalSaleId: saleId,
+                originalInvoiceNumber: sale.invoiceNumber,
+                productId: productId,
+                productName: productName,
+                price: price,
+                quantity: returnQuantity,
+                amount: returnAmount,
+                reason: returnReason,
+                date: Timestamp.now(),
+                cashierId: loggedInUserId,
+                cashierName: cashierName,
+                status: 'completed'
+            };
+            
+            await addDoc(collection(db, "returns"), returnData);
+            
+            // Update product stock (add back the returned quantity)
+            const productRef = doc(db, "products", productId);
+            const productDoc = await getDoc(productRef);
+            
+            if (productDoc.exists()) {
+                const currentStock = productDoc.data().stock;
+                const newStock = currentStock + returnQuantity;
+                
+                await updateDoc(productRef, {
+                    stock: newStock,
+                    lastUpdated: Timestamp.now()
+                });
+                
+                // Add stock update activity
+                await addDoc(collection(db, "activities"), {
+                    type: 'stock',
+                    description: `Return: ${returnQuantity} ${productName} added back to stock`,
+                    timestamp: Timestamp.now(),
+                    userId: loggedInUserId
+                });
+            }
+            
+            // Update sale record to mark as having returns
+            const saleReturns = sale.returns || [];
+            saleReturns.push({
+                returnId: returnId,
+                productId: productId,
+                productName: productName,
+                quantity: returnQuantity,
+                amount: returnAmount,
+                date: Timestamp.now()
+            });
+            
+            await updateDoc(saleRef, {
+                returns: saleReturns,
+                total: sale.total - returnAmount,
+                subtotal: sale.subtotal - returnAmount,
                 lastUpdated: Timestamp.now()
             });
             
-            // Add stock update activity
+            // Add return activity
             await addDoc(collection(db, "activities"), {
-                type: 'stock',
-                description: `Return: ${returnQuantity} ${productName} added back to stock`,
+                type: 'return',
+                description: `Return #${returnId}: ${returnQuantity} x ${productName} - ₱${returnAmount.toFixed(2)} refunded`,
                 timestamp: Timestamp.now(),
                 userId: loggedInUserId
             });
+            
+            showNotification(`Return processed successfully! Return ID: ${returnId}`, 'success');
+            
+            // Close modal
+            document.getElementById('returnModal').style.display = 'none';
+            
+            // Refresh data
+            loadDashboardStats();
+            loadSalesHistory(currentSortOrder);
+            loadInventory();
+            
+        } catch (error) {
+            console.error("Error processing return:", error);
+            showNotification('Error processing return', 'error');
+        } finally {
+            isProcessingReturn = false;
+            processReturnBtn.disabled = false;
+            processReturnBtn.textContent = originalText;
         }
-        
-        // Update sale record to mark as having returns
-        const saleReturns = sale.returns || [];
-        saleReturns.push({
-            returnId: returnId,
-            productId: productId,
-            productName: productName,
-            quantity: returnQuantity,
-            amount: returnAmount,
-            date: Timestamp.now()
-        });
-        
-        await updateDoc(saleRef, {
-            returns: saleReturns,
-            total: sale.total - returnAmount,
-            subtotal: sale.subtotal - returnAmount,
-            lastUpdated: Timestamp.now()
-        });
-        
-        // Add return activity
-        await addDoc(collection(db, "activities"), {
-            type: 'return',
-            description: `Return #${returnId}: ${returnQuantity} x ${productName} - ₱${returnAmount.toFixed(2)} refunded`,
-            timestamp: Timestamp.now(),
-            userId: loggedInUserId
-        });
-        
-        showNotification(`Return processed successfully! Return ID: ${returnId}`, 'success');
-        
-        // Close modal
-        document.getElementById('returnModal').style.display = 'none';
-        
-        // Refresh data
-        loadDashboardStats();
-        loadSalesHistory(currentSortOrder);
-        loadInventory();
-        
-    } catch (error) {
-        console.error("Error processing return:", error);
-        showNotification('Error processing return', 'error');
-    }
-}
-
-// Process Return button event listener
-const processReturnBtn = document.getElementById('processReturnBtn');
-if (processReturnBtn) {
-    processReturnBtn.addEventListener('click', (e) => {
-        e.preventDefault();
-        processReturn();
     });
 }
-
 // ========== PDF REPORT GENERATION FUNCTIONS ==========
 
 // Download Sales History as PDF
@@ -3921,8 +3982,7 @@ async function loadProductSalesBreakdown(selectedMonth, selectedYear) {
 }
 
 // Display Product Sales Breakdown
-// Display Product Sales Breakdown with refund info
-function displayProductSalesBreakdown(productSales, totalItemsSold, totalRefundedItems = 0) {
+function displayProductSalesBreakdown(productSales, totalItemsSold) {
     const container = document.getElementById('productSalesBreakdown');
     if (!container) return;
     
@@ -3933,21 +3993,17 @@ function displayProductSalesBreakdown(productSales, totalItemsSold, totalRefunde
     
     let html = `
         <div class="product-sales-header">
-            <h3><i class="fas fa-chart-pie"></i> Product Sales Breakdown (Net)</h3>
-            <div class="sales-summary">
-                <p>Total Items Sold: <strong>${totalItemsSold}</strong> pcs</p>
-                ${totalRefundedItems > 0 ? `<p class="refund-summary">Items Refunded: <span style="color: #e74c3c;">${totalRefundedItems} pcs</span></p>` : ''}
-            </div>
+            <h3><i class="fas fa-chart-pie"></i> Product Sales Breakdown</h3>
+            <p>Total Items Sold: ${totalItemsSold}</p>
         </div>
         <div class="product-sales-table-container">
             <table class="product-sales-table">
                 <thead>
                     <tr>
                         <th>Product Name</th>
-                        <th>Net Qty Sold</th>
-                        <th>Net Revenue (₱)</th>
+                        <th>Quantity Sold</th>
+                        <th>Revenue (₱)</th>
                         <th>% of Total</th>
-                        ${totalRefundedItems > 0 ? '<th>Refunded Qty</th>' : ''}
                     </tr>
                 </thead>
                 <tbody>
@@ -3961,13 +4017,6 @@ function displayProductSalesBreakdown(productSales, totalItemsSold, totalRefunde
                 <td><strong>${product.quantity}</strong> pcs</td>
                 <td>₱${product.revenue.toFixed(2)}</td>
                 <td>${percentage}%</td>
-                ${totalRefundedItems > 0 ? `
-                <td>
-                    ${product.refundedQuantity > 0 ? 
-                        `<span style="color: #e74c3c;">${product.refundedQuantity} pcs</span>` : 
-                        '<span style="color: #95a5a6;">-</span>'}
-                </td>
-                ` : ''}
             </tr>
         `;
     });
