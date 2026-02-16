@@ -778,6 +778,7 @@ async function openLowStockModal() {
 }
 
 // Open Today's Sales Modal
+// Open Today's Sales Modal with Refund Option
 async function openTodaySalesModal() {
     try {
         const modal = document.getElementById('todaySalesModal');
@@ -810,7 +811,20 @@ async function openTodaySalesModal() {
             orderBy("date", "desc")
         );
         
-        const salesSnapshot = await getDocs(salesQuery);
+        const [salesSnapshot, returnsSnapshot] = await Promise.all([
+            getDocs(salesQuery),
+            getDocs(query(collection(db, "returns"), 
+                where("date", ">=", Timestamp.fromDate(today)), 
+                where("date", "<", Timestamp.fromDate(tomorrow))))
+        ]);
+        
+        // Create a map of returned items for quick lookup
+        const returnedItems = new Map();
+        returnsSnapshot.forEach(doc => {
+            const ret = doc.data();
+            const key = `${ret.originalSaleId}_${ret.productId}`;
+            returnedItems.set(key, ret);
+        });
         
         if (salesSnapshot.empty) {
             modalBody.innerHTML = `
@@ -826,6 +840,7 @@ async function openTodaySalesModal() {
         // Calculate totals
         let totalSales = 0;
         let totalItems = 0;
+        let totalRefunds = 0;
         const sales = [];
         
         salesSnapshot.forEach(doc => {
@@ -833,15 +848,30 @@ async function openTodaySalesModal() {
             totalSales += sale.total || 0;
             
             let itemsCount = 0;
+            let refundedCount = 0;
+            let refundedAmount = 0;
+            
             if (sale.items && Array.isArray(sale.items)) {
-                itemsCount = sale.items.reduce((sum, item) => sum + (item.quantity || 0), 0);
+                sale.items.forEach(item => {
+                    const returnKey = `${doc.id}_${item.productId}`;
+                    const isReturned = returnedItems.has(returnKey);
+                    itemsCount += item.quantity || 0;
+                    if (isReturned) {
+                        refundedCount += item.quantity || 0;
+                        refundedAmount += (item.price * item.quantity) || 0;
+                    }
+                });
             }
             totalItems += itemsCount;
+            totalRefunds += refundedAmount;
             
             sales.push({
                 id: doc.id,
                 ...sale,
-                itemsCount
+                itemsCount,
+                refundedCount,
+                refundedAmount,
+                hasReturns: sale.returns && sale.returns.length > 0
             });
         });
         
@@ -849,17 +879,23 @@ async function openTodaySalesModal() {
         let html = `
             <div class="modal-stats-summary">
                 <div class="modal-stat">
-                    <span class="modal-stat-label">Total Transactions:</span>
+                    <span class="modal-stat-label">Transactions:</span>
                     <span class="modal-stat-value">${sales.length}</span>
                 </div>
                 <div class="modal-stat">
-                    <span class="modal-stat-label">Total Items Sold:</span>
+                    <span class="modal-stat-label">Items Sold:</span>
                     <span class="modal-stat-value">${totalItems}</span>
                 </div>
                 <div class="modal-stat highlight">
                     <span class="modal-stat-label">Total Sales:</span>
                     <span class="modal-stat-value">₱${totalSales.toFixed(2)}</span>
                 </div>
+                ${totalRefunds > 0 ? `
+                <div class="modal-stat refund">
+                    <span class="modal-stat-label">Refunds:</span>
+                    <span class="modal-stat-value refund">-₱${totalRefunds.toFixed(2)}</span>
+                </div>
+                ` : ''}
             </div>
             <div class="modal-items-container">
         `;
@@ -868,34 +904,41 @@ async function openTodaySalesModal() {
             const saleDate = sale.date?.toDate ? sale.date.toDate() : new Date();
             const timeStr = saleDate.toLocaleTimeString('en-US', {
                 hour: '2-digit',
-                minute: '2-digit',
-                second: '2-digit'
+                minute: '2-digit'
             });
-            
-            const itemsPreview = sale.items ? sale.items.slice(0, 2).map(item => 
-                `${item.name} x${item.quantity}`
-            ).join(', ') : '';
-            
-            const moreItems = sale.items && sale.items.length > 2 ? ` +${sale.items.length - 2} more` : '';
+            const hasRefunds = sale.refundedCount > 0;
             
             html += `
-                <div class="modal-item sale-item" onclick="viewSaleDetails('${sale.id}')">
+                <div class="modal-item sale-item ${hasRefunds ? 'has-refunds' : ''}" onclick="viewSaleDetailsModal('${sale.id}')">
                     <div class="modal-item-info">
                         <div class="modal-item-name">
                             <strong>${sale.invoiceNumber || '#' + sale.id.slice(-8).toUpperCase()}</strong>
                             <span class="sale-time">${timeStr}</span>
+                            ${hasRefunds ? '<span class="refund-badge"><i class="fas fa-undo"></i> Refunded</span>' : ''}
                         </div>
                         <div class="modal-item-details">
-                            <span class="item-cashier"><i class="fas fa-user"></i> ${sale.cashierName || 'Unknown'}</span>
-                            <span class="item-payment"><i class="fas fa-credit-card"></i> ${sale.paymentMethod || 'Cash'}</span>
-                            <span class="item-items"><i class="fas fa-box"></i> ${itemsPreview}${moreItems}</span>
+                            <span><i class="fas fa-user"></i> ${sale.cashierName || 'Unknown'}</span>
+                            <span><i class="fas fa-credit-card"></i> ${sale.paymentMethod || 'Cash'}</span>
+                            <span><i class="fas fa-box"></i> ${sale.itemsCount} items</span>
+                            ${hasRefunds ? `
+                            <span class="refund-info">
+                                Refunded: ${sale.refundedCount} items (-₱${sale.refundedAmount.toFixed(2)})
+                            </span>
+                            ` : ''}
                         </div>
                     </div>
                     <div class="modal-item-amount">
-                        <span class="sale-amount">₱${(sale.total || 0).toFixed(2)}</span>
-                        <button class="btn-icon-small" onclick="event.stopPropagation(); viewSaleDetails('${sale.id}')" title="View Details">
-                            <i class="fas fa-eye"></i>
-                        </button>
+                        <span class="sale-amount ${hasRefunds ? 'refunded' : ''}">₱${(sale.total || 0).toFixed(2)}</span>
+                        <div class="item-actions">
+                            <button class="btn-icon-small" onclick="event.stopPropagation(); viewSaleDetailsModal('${sale.id}')" title="View Details">
+                                <i class="fas fa-eye"></i>
+                            </button>
+                            ${!hasRefunds ? `
+                            <button class="btn-icon-small refund-btn" onclick="event.stopPropagation(); openRefundFromSale('${sale.id}')" title="Process Refund">
+                                <i class="fas fa-undo-alt"></i>
+                            </button>
+                            ` : ''}
+                        </div>
                     </div>
                 </div>
             `;
@@ -904,9 +947,14 @@ async function openTodaySalesModal() {
         html += `
             </div>
             <div class="modal-footer">
-                <button class="btn-primary" onclick="window.location.href='#'; document.querySelector('[data-tab=\"sales\"]').click();">
+                <button class="btn-primary" onclick="document.querySelector('[data-tab=\"sales\"]').click(); closeModal('todaySalesModal')">
                     <i class="fas fa-chart-line"></i> View All Sales
                 </button>
+                ${totalRefunds > 0 ? `
+                <p class="refund-note">
+                    <i class="fas fa-info-circle"></i> Items with refunds cannot be refunded again
+                </p>
+                ` : ''}
             </div>
         `;
         
@@ -927,6 +975,299 @@ async function openTodaySalesModal() {
     }
 }
 
+// View Sale Details Modal (shows all items with refund status)
+async function viewSaleDetailsModal(saleId) {
+    try {
+        const modal = document.getElementById('saleDetailsModal');
+        const panelBody = document.getElementById('salePanelBody');
+        
+        if (!modal || !panelBody) return;
+        
+        // Show loading
+        panelBody.innerHTML = `
+            <div class="modal-loading">
+                <i class="fas fa-spinner fa-spin"></i>
+                <p>Loading sale details...</p>
+            </div>
+        `;
+        modal.style.display = 'block';
+        
+        // Get sale data and returns
+        const saleRef = doc(db, "sales", saleId);
+        const [saleDoc, returnsSnapshot] = await Promise.all([
+            getDoc(saleRef),
+            getDocs(query(collection(db, "returns"), where("originalSaleId", "==", saleId)))
+        ]);
+        
+        if (!saleDoc.exists()) {
+            panelBody.innerHTML = '<div class="modal-error">Sale not found</div>';
+            return;
+        }
+        
+        const sale = saleDoc.data();
+        const returns = [];
+        returnsSnapshot.forEach(doc => returns.push(doc.data()));
+        
+        // Create a map of returned quantities
+        const returnedQuantities = new Map();
+        returns.forEach(ret => {
+            const key = ret.productId;
+            returnedQuantities.set(key, (returnedQuantities.get(key) || 0) + ret.quantity);
+        });
+        
+        const saleDate = sale.date?.toDate ? sale.date.toDate() : new Date();
+        const formattedDate = saleDate.toLocaleDateString('en-US', { 
+            year: 'numeric', 
+            month: 'long', 
+            day: 'numeric',
+            hour: '2-digit', 
+            minute: '2-digit'
+        });
+        
+        // Build items list with refund status
+        let itemsHtml = '';
+        sale.items.forEach(item => {
+            const returnedQty = returnedQuantities.get(item.productId) || 0;
+            const remainingQty = item.quantity - returnedQty;
+            const isPartiallyReturned = returnedQty > 0 && returnedQty < item.quantity;
+            const isFullyReturned = returnedQty >= item.quantity;
+            
+            itemsHtml += `
+                <div class="item-row ${isFullyReturned ? 'fully-returned' : ''} ${isPartiallyReturned ? 'partially-returned' : ''}">
+                    <div class="item-info">
+                        <div class="item-name">${item.name}</div>
+                        <div class="item-meta">
+                            <span>Code: ${item.code || 'N/A'}</span>
+                            <span class="item-qty">Original Qty: ${item.quantity}</span>
+                            ${returnedQty > 0 ? `
+                                <span class="returned-qty">Returned: ${returnedQty}</span>
+                            ` : ''}
+                            ${remainingQty > 0 && returnedQty > 0 ? `
+                                <span class="remaining-qty">Remaining: ${remainingQty}</span>
+                            ` : ''}
+                        </div>
+                    </div>
+                    <div class="item-price">
+                        ₱${(item.price * item.quantity).toFixed(2)}
+                        ${returnedQty > 0 ? `
+                            <small class="refunded-amount">(-₱${(item.price * returnedQty).toFixed(2)})</small>
+                        ` : ''}
+                    </div>
+                </div>`;
+        });
+        
+        const totalRefunded = returns.reduce((sum, r) => sum + r.amount, 0);
+        const netTotal = sale.total - totalRefunded;
+        
+        // Build the complete modal HTML
+        panelBody.innerHTML = `
+            <!-- Invoice Card -->
+            <div class="invoice-card">
+                <div class="invoice-header">
+                    <div class="invoice-number">
+                        ${sale.invoiceNumber || 'N/A'}
+                        <span>${sale.paymentMethod || 'Cash'}</span>
+                    </div>
+                    <div class="payment-badge ${totalRefunded > 0 ? 'partial-refund' : 'paid'}">
+                        ${totalRefunded > 0 ? 'PARTIALLY REFUNDED' : 'PAID'}
+                    </div>
+                </div>
+                <div class="invoice-details">
+                    <div class="detail-row">
+                        <i class="fas fa-calendar-alt"></i>
+                        <strong>Date:</strong>
+                        <span>${formattedDate}</span>
+                    </div>
+                    <div class="detail-row">
+                        <i class="fas fa-user"></i>
+                        <strong>Cashier:</strong>
+                        <span>${sale.cashierName || 'Unknown'}</span>
+                    </div>
+                    <div class="detail-row">
+                        <i class="fas fa-id-card"></i>
+                        <strong>Cashier ID:</strong>
+                        <span>${sale.cashierId ? sale.cashierId.slice(-8) : 'N/A'}</span>
+                    </div>
+                </div>
+            </div>
+            
+            <!-- Items Card -->
+            <div class="items-card">
+                <div class="items-header">
+                    <i class="fas fa-shopping-cart"></i>
+                    <h3>Items Purchased</h3>
+                </div>
+                <div class="item-list">
+                    ${itemsHtml}
+                </div>
+            </div>
+            
+            <!-- Summary Card -->
+            <div class="summary-card">
+                <div class="summary-row">
+                    <span class="summary-label">Subtotal:</span>
+                    <span class="summary-value">₱${sale.subtotal.toFixed(2)}</span>
+                </div>
+                ${sale.discountPercentage > 0 ? `
+                <div class="summary-row">
+                    <span class="summary-label">Discount (${sale.discountPercentage}%):</span>
+                    <span class="summary-value discount">-₱${sale.discountAmount.toFixed(2)}</span>
+                </div>
+                ` : ''}
+                ${totalRefunded > 0 ? `
+                <div class="summary-row refund">
+                    <span class="summary-label">Refunded Amount:</span>
+                    <span class="summary-value refund">-₱${totalRefunded.toFixed(2)}</span>
+                </div>
+                ` : ''}
+                <div class="summary-row total-row">
+                    <span class="total-label">${totalRefunded > 0 ? 'Net Total:' : 'Total Amount:'}</span>
+                    <span class="total-value">₱${netTotal.toFixed(2)}</span>
+                </div>
+            </div>
+            
+            <!-- Payment Card -->
+            <div class="payment-card">
+                <div class="payment-header">
+                    <i class="fas fa-credit-card"></i>
+                    <h3>Payment Details</h3>
+                </div>
+                <div class="payment-grid">
+                    <div class="payment-item">
+                        <div class="label">Method</div>
+                        <div class="value">${sale.paymentMethod || 'Cash'}</div>
+                    </div>
+                    <div class="payment-item">
+                        <div class="label">Tendered</div>
+                        <div class="value cash">₱${sale.amountTendered.toFixed(2)}</div>
+                    </div>
+                    <div class="payment-item">
+                        <div class="label">Change</div>
+                        <div class="value change">₱${sale.change.toFixed(2)}</div>
+                    </div>
+                </div>
+            </div>`;
+        
+        // Add return history if any
+        if (returns.length > 0) {
+            panelBody.innerHTML += `
+                <div class="return-card">
+                    <div class="return-header">
+                        <i class="fas fa-undo-alt"></i>
+                        <h3>Refund History</h3>
+                    </div>`;
+            
+            returns.forEach(ret => {
+                panelBody.innerHTML += `
+                    <div class="return-item">
+                        <div class="return-row">
+                            <span class="return-product">${ret.productName}</span>
+                            <span class="return-qty">x${ret.quantity}</span>
+                            <span class="return-amount">-₱${ret.amount.toFixed(2)}</span>
+                        </div>
+                        <div class="return-reason">
+                            Reason: ${ret.reason || 'Not specified'}
+                        </div>
+                        <small>${formatDate(ret.date)}</small>
+                    </div>`;
+            });
+            
+            panelBody.innerHTML += `</div>`;
+        }
+        
+        // Add action buttons
+        panelBody.innerHTML += `
+            <div class="panel-actions">
+                <button class="panel-btn print" onclick="printReceipt('${saleId}')">
+                    <i class="fas fa-print"></i> Print
+                </button>
+                <button class="panel-btn close-btn" onclick="closeSalePanel()">
+                    <i class="fas fa-times"></i> Close
+                </button>
+            </div>
+            <div class="panel-footer">
+                <i class="fas fa-check-circle"></i> 
+                Transaction ${totalRefunded > 0 ? 'partially refunded' : 'completed'}
+            </div>`;
+        
+    } catch (error) {
+        console.error("Error viewing sale details:", error);
+        document.getElementById('salePanelBody').innerHTML = `
+            <div class="modal-error">
+                <i class="fas fa-exclamation-circle"></i>
+                <p>Error loading sale details</p>
+            </div>
+        `;
+    }
+}
+
+// Open Refund from Sale
+async function openRefundFromSale(saleId) {
+    try {
+        const saleRef = doc(db, "sales", saleId);
+        const saleDoc = await getDoc(saleRef);
+        
+        if (!saleDoc.exists()) {
+            showNotification('Sale not found', 'error');
+            return;
+        }
+        
+        const sale = saleDoc.data();
+        
+        // Check for existing returns
+        const returnsSnapshot = await getDocs(query(collection(db, "returns"), where("originalSaleId", "==", saleId)));
+        const returnedProducts = new Set();
+        returnsSnapshot.forEach(doc => {
+            const ret = doc.data();
+            returnedProducts.add(ret.productId);
+        });
+        
+        // Open return modal with this sale preselected
+        const returnModal = document.getElementById('returnModal');
+        const saleInfoDiv = document.getElementById('returnSaleInfo');
+        
+        saleInfoDiv.innerHTML = `
+            <h3>Return for Sale #${sale.invoiceNumber}</h3>
+            <p>Date: ${formatDate(sale.date)}</p>
+            <p>Cashier: ${sale.cashierName}</p>
+            <p>Total: ₱${sale.total.toFixed(2)}</p>
+        `;
+        
+        returnModal.dataset.saleId = saleId;
+        
+        // Show product selection (only items not yet returned)
+        const resultsDiv = document.getElementById('returnSearchResults');
+        resultsDiv.innerHTML = '<h4>Select a product to return:</h4>';
+        
+        let hasReturnableItems = false;
+        sale.items.forEach(item => {
+            if (!returnedProducts.has(item.productId)) {
+                hasReturnableItems = true;
+                const itemDiv = document.createElement('div');
+                itemDiv.className = 'search-result-item';
+                itemDiv.innerHTML = `
+                    <span class="product-name">${item.name}</span>
+                    <span class="product-details">Qty: ${item.quantity} - ₱${item.price.toFixed(2)}</span>
+                `;
+                itemDiv.addEventListener('click', () => selectProductForReturn(saleId, item.productId, item.name, item.price, item.quantity));
+                resultsDiv.appendChild(itemDiv);
+            }
+        });
+        
+        if (!hasReturnableItems) {
+            resultsDiv.innerHTML = '<p class="no-data">All items in this sale have already been returned</p>';
+        }
+        
+        document.getElementById('returnSearch').value = '';
+        document.getElementById('returnSearch').disabled = true;
+        document.getElementById('selectedReturnInfo').style.display = 'none';
+        returnModal.style.display = 'block';
+        
+    } catch (error) {
+        console.error("Error opening refund:", error);
+        showNotification('Error opening refund', 'error');
+    }
+}
 // Close modal function
 function closeModal(modalId) {
     const modal = document.getElementById(modalId);
@@ -2466,6 +2807,7 @@ async function downloadSalesPDF() {
 }
 
 // Download Reports Tab PDF (Enhanced with Product Sales Breakdown)
+// Download Reports Tab PDF (Enhanced with all report content)
 async function downloadReportPDF() {
     try {
         showNotification('Generating comprehensive PDF report...', 'info');
@@ -2484,8 +2826,9 @@ async function downloadReportPDF() {
             return;
         }
         
-        // Get stats
-        const statsCards = document.querySelectorAll('#reportStats .stat-card');
+        // Get stats from reportStats
+        const reportStats = document.getElementById('reportStats');
+        const statsCards = reportStats.querySelectorAll('.stat-card');
         let totalSales = 0;
         let transactions = 0;
         let averageSale = 0;
@@ -2499,7 +2842,10 @@ async function downloadReportPDF() {
         // Get product sales breakdown data
         const productSalesData = await getProductSalesData(selectedMonth, selectedYear);
         
-        // Create new PDF document (portrait for better product list display)
+        // Get the raw sales data for detailed breakdown
+        const salesData = await getDetailedSalesData(selectedMonth, selectedYear);
+        
+        // Create new PDF document (portrait for better content display)
         const { jsPDF } = window.jspdf;
         const doc = new jsPDF({
             orientation: 'portrait',
@@ -2508,74 +2854,171 @@ async function downloadReportPDF() {
         });
         
         let yPos = 15;
+        const pageWidth = doc.internal.pageSize.getWidth();
+        const margin = 14;
         
-        // Add header
-        doc.setFontSize(20);
+        // ========== HEADER SECTION ==========
+        doc.setFontSize(22);
         doc.setTextColor(44, 62, 80);
-        doc.text('GMDC BOTICA - Comprehensive Sales Report', 14, yPos);
+        doc.setFont('helvetica', 'bold');
+        doc.text('GMDC BOTICA PHARMACY', pageWidth / 2, yPos, { align: 'center' });
         yPos += 8;
         
-        // Add report info
-        doc.setFontSize(14);
+        doc.setFontSize(18);
         doc.setTextColor(52, 152, 219);
-        doc.text(`${monthNames[selectedMonth]} ${selectedYear} - ${period.charAt(0).toUpperCase() + period.slice(1)} Report`, 14, yPos);
-        yPos += 7;
+        doc.text('Comprehensive Sales Report', pageWidth / 2, yPos, { align: 'center' });
+        yPos += 8;
         
-        // Add date and time
+        doc.setFontSize(14);
+        doc.setTextColor(44, 62, 80);
+        doc.setFont('helvetica', 'normal');
+        doc.text(`${monthNames[selectedMonth]} ${selectedYear} - ${period.charAt(0).toUpperCase() + period.slice(1)} Analysis`, pageWidth / 2, yPos, { align: 'center' });
+        yPos += 10;
+        
+        // Add a line
+        doc.setDrawColor(52, 152, 219);
+        doc.setLineWidth(0.5);
+        doc.line(margin, yPos - 2, pageWidth - margin, yPos - 2);
+        yPos += 5;
+        
+        // ========== DATE AND GENERATION INFO ==========
         doc.setFontSize(10);
         doc.setTextColor(127, 140, 141);
         const now = new Date();
-        doc.text(`Generated on: ${formatDateForPDF(now)}`, 14, yPos);
+        doc.text(`Generated on: ${formatDateForPDF(now)}`, margin, yPos);
         yPos += 5;
         
         // Get cashier name
         const cashierName = document.getElementById('sidebarUserName')?.textContent || 'Unknown';
-        doc.text(`Generated by: ${cashierName}`, 14, yPos);
+        doc.text(`Generated by: ${cashierName}`, margin, yPos);
+        yPos += 5;
+        
+        const reportPeriod = document.getElementById('reportPeriod')?.options[document.getElementById('reportPeriod')?.selectedIndex]?.text || 'Daily';
+        doc.text(`Report Period: ${reportPeriod}`, margin, yPos);
         yPos += 10;
         
-        // Add summary stats
+        // ========== EXECUTIVE SUMMARY ==========
         doc.setFontSize(14);
         doc.setTextColor(44, 62, 80);
-        doc.text('Summary Statistics', 14, yPos);
+        doc.setFont('helvetica', 'bold');
+        doc.text('Executive Summary', margin, yPos);
         yPos += 7;
         
+        // Create summary box
+        doc.setFillColor(248, 249, 250);
+        doc.setDrawColor(222, 226, 230);
+        doc.roundedRect(margin, yPos - 2, pageWidth - (margin * 2), 30, 3, 3, 'FD');
+        
         doc.setFontSize(11);
-        doc.setTextColor(0, 0, 0);
-        doc.text(`Total Sales: ₱${totalSales.toFixed(2)}`, 20, yPos);
-        yPos += 6;
-        doc.text(`Number of Transactions: ${transactions}`, 20, yPos);
-        yPos += 6;
-        doc.text(`Average Sale: ₱${averageSale.toFixed(2)}`, 20, yPos);
-        yPos += 10;
+        doc.setTextColor(44, 62, 80);
+        doc.setFont('helvetica', 'normal');
+        doc.text(`Total Sales: ₱${totalSales.toFixed(2)}`, margin + 5, yPos + 5);
+        doc.text(`Number of Transactions: ${transactions}`, margin + 5, yPos + 12);
+        doc.text(`Average Sale per Transaction: ₱${averageSale.toFixed(2)}`, margin + 5, yPos + 19);
+        yPos += 35;
+        
+        // ========== SALES CHART ==========
+        doc.setFontSize(14);
+        doc.setTextColor(44, 62, 80);
+        doc.setFont('helvetica', 'bold');
+        doc.text('Sales Visualization', margin, yPos);
+        yPos += 7;
         
         // Add chart as image
         try {
             const chartImage = chartCanvas.toDataURL('image/png');
-            doc.addImage(chartImage, 'PNG', 14, yPos, 180, 80);
-            yPos += 85;
+            doc.addImage(chartImage, 'PNG', margin, yPos, pageWidth - (margin * 2), 70);
+            yPos += 75;
         } catch (error) {
             console.error("Error adding chart to PDF:", error);
-            yPos += 10;
+            doc.setFontSize(11);
+            doc.setTextColor(127, 140, 141);
+            doc.text('Chart data could not be loaded', margin, yPos + 10);
+            yPos += 20;
         }
         
-        // Add Product Sales Breakdown
-        if (productSalesData.length > 0) {
+        // ========== DAILY/PERIOD BREAKDOWN ==========
+        if (salesData.labels && salesData.labels.length > 0) {
             doc.setFontSize(14);
             doc.setTextColor(44, 62, 80);
-            doc.text('Product Sales Breakdown', 14, yPos);
+            doc.setFont('helvetica', 'bold');
+            doc.text('Period Breakdown', margin, yPos);
+            yPos += 7;
+            
+            // Prepare breakdown table
+            const breakdownColumn = ["Date/Period", "Sales (₱)", "Transactions", "Average"];
+            const breakdownRows = [];
+            
+            for (let i = 0; i < salesData.labels.length; i++) {
+                const label = salesData.labels[i];
+                const saleAmount = salesData.data[i] || 0;
+                const transactionCount = salesData.transactionCounts[i] || 0;
+                const avg = transactionCount > 0 ? saleAmount / transactionCount : 0;
+                
+                breakdownRows.push([
+                    label,
+                    saleAmount.toFixed(2),
+                    transactionCount.toString(),
+                    avg.toFixed(2)
+                ]);
+            }
+            
+            doc.autoTable({
+                head: [breakdownColumn],
+                body: breakdownRows,
+                startY: yPos,
+                theme: 'striped',
+                headStyles: {
+                    fillColor: [52, 152, 219],
+                    textColor: [255, 255, 255],
+                    fontStyle: 'bold',
+                    fontSize: 10
+                },
+                bodyStyles: {
+                    fontSize: 9
+                },
+                columnStyles: {
+                    0: { cellWidth: 40 },
+                    1: { cellWidth: 40, halign: 'right' },
+                    2: { cellWidth: 30, halign: 'center' },
+                    3: { cellWidth: 40, halign: 'right' }
+                },
+                margin: { left: margin, right: margin }
+            });
+            
+            yPos = doc.lastAutoTable.finalY + 10;
+        }
+        
+        // Check if we need a new page
+        if (yPos > 250) {
+            doc.addPage();
+            yPos = 20;
+        }
+        
+        // ========== PRODUCT SALES BREAKDOWN ==========
+        if (productSalesData.length > 0) {
+            doc.setFontSize(16);
+            doc.setTextColor(44, 62, 80);
+            doc.setFont('helvetica', 'bold');
+            doc.text('Product Sales Breakdown', margin, yPos);
+            yPos += 7;
+            
+            // Add summary
+            const totalItemsSold = productSalesData.reduce((sum, p) => sum + p.quantity, 0);
+            const totalRevenue = productSalesData.reduce((sum, p) => sum + p.revenue, 0);
+            
+            doc.setFontSize(10);
+            doc.setTextColor(127, 140, 141);
+            doc.text(`Total Items Sold: ${totalItemsSold} pcs | Total Revenue: ₱${totalRevenue.toFixed(2)}`, margin, yPos);
             yPos += 7;
             
             // Prepare product sales table
             const productTableColumn = ["Product Name", "Qty Sold", "Revenue (₱)", "% of Total"];
             const productTableRows = [];
             
-            let totalItemsSold = 0;
-            productSalesData.forEach(p => {
-                totalItemsSold += p.quantity;
-            });
-            
+            // Calculate percentages based on revenue
             productSalesData.forEach(product => {
-                const percentage = totalItemsSold > 0 ? ((product.quantity / totalItemsSold) * 100).toFixed(1) : 0;
+                const percentage = totalRevenue > 0 ? ((product.revenue / totalRevenue) * 100).toFixed(1) : 0;
                 productTableRows.push([
                     product.name,
                     product.quantity.toString(),
@@ -2584,6 +3027,24 @@ async function downloadReportPDF() {
                 ]);
             });
             
+            // Add top products note
+            doc.setFontSize(9);
+            doc.setTextColor(52, 152, 219);
+            doc.text(`Top 3 Products by Revenue:`, margin, yPos);
+            yPos += 5;
+            
+            // Show top 3
+            const topProducts = [...productSalesData].sort((a, b) => b.revenue - a.revenue).slice(0, 3);
+            topProducts.forEach((product, index) => {
+                doc.setFontSize(9);
+                doc.setTextColor(44, 62, 80);
+                doc.text(`${index + 1}. ${product.name} - ${product.quantity} pcs (₱${product.revenue.toFixed(2)})`, margin + 5, yPos);
+                yPos += 4;
+            });
+            
+            yPos += 3;
+            
+            // Full product table
             doc.autoTable({
                 head: [productTableColumn],
                 body: productTableRows,
@@ -2592,35 +3053,174 @@ async function downloadReportPDF() {
                 headStyles: {
                     fillColor: [52, 152, 219],
                     textColor: [255, 255, 255],
-                    fontStyle: 'bold'
+                    fontStyle: 'bold',
+                    fontSize: 10
+                },
+                bodyStyles: {
+                    fontSize: 9
                 },
                 columnStyles: {
                     0: { cellWidth: 70 },
-                    1: { cellWidth: 30, halign: 'center' },
-                    2: { cellWidth: 40, halign: 'right' },
-                    3: { cellWidth: 30, halign: 'center' }
-                }
+                    1: { cellWidth: 25, halign: 'center' },
+                    2: { cellWidth: 35, halign: 'right' },
+                    3: { cellWidth: 25, halign: 'center' }
+                },
+                margin: { left: margin, right: margin }
             });
             
-            // Update yPos after table
             yPos = doc.lastAutoTable.finalY + 10;
         }
         
-        // Add footer
+        // Check if we need a new page for payment methods
+        if (yPos > 250) {
+            doc.addPage();
+            yPos = 20;
+        }
+        
+        // ========== PAYMENT METHOD BREAKDOWN ==========
+        const paymentMethodData = await getPaymentMethodData(selectedMonth, selectedYear);
+        
+        if (paymentMethodData.length > 0) {
+            doc.setFontSize(14);
+            doc.setTextColor(44, 62, 80);
+            doc.setFont('helvetica', 'bold');
+            doc.text('Payment Method Analysis', margin, yPos);
+            yPos += 7;
+            
+            const paymentColumn = ["Payment Method", "Transactions", "Total (₱)", "Average"];
+            const paymentRows = [];
+            
+            paymentMethodData.forEach(method => {
+                paymentRows.push([
+                    method.method,
+                    method.count.toString(),
+                    method.total.toFixed(2),
+                    (method.total / method.count).toFixed(2)
+                ]);
+            });
+            
+            doc.autoTable({
+                head: [paymentColumn],
+                body: paymentRows,
+                startY: yPos,
+                theme: 'striped',
+                headStyles: {
+                    fillColor: [46, 204, 113],
+                    textColor: [255, 255, 255],
+                    fontStyle: 'bold',
+                    fontSize: 10
+                },
+                bodyStyles: {
+                    fontSize: 9
+                },
+                columnStyles: {
+                    0: { cellWidth: 40 },
+                    1: { cellWidth: 30, halign: 'center' },
+                    2: { cellWidth: 40, halign: 'right' },
+                    3: { cellWidth: 40, halign: 'right' }
+                },
+                margin: { left: margin, right: margin }
+            });
+            
+            yPos = doc.lastAutoTable.finalY + 10;
+        }
+        
+        // ========== DISCOUNT ANALYSIS ==========
+        const discountData = await getDiscountData(selectedMonth, selectedYear);
+        
+        if (discountData.totalDiscounts > 0) {
+            // Check if we need a new page
+            if (yPos > 230) {
+                doc.addPage();
+                yPos = 20;
+            }
+            
+            doc.setFontSize(14);
+            doc.setTextColor(44, 62, 80);
+            doc.setFont('helvetica', 'bold');
+            doc.text('Discount Analysis', margin, yPos);
+            yPos += 7;
+            
+            doc.setFontSize(11);
+            doc.setTextColor(44, 62, 80);
+            doc.text(`Total Discounts Given: ₱${discountData.totalDiscounts.toFixed(2)}`, margin, yPos);
+            yPos += 5;
+            doc.text(`Transactions with Discount: ${discountData.discountedTransactions}`, margin, yPos);
+            yPos += 5;
+            doc.text(`Average Discount per Transaction: ₱${(discountData.totalDiscounts / (discountData.discountedTransactions || 1)).toFixed(2)}`, margin, yPos);
+            yPos += 10;
+            
+            if (discountData.breakdown.length > 0) {
+                const discountColumn = ["Discount Type", "Count", "Total Discount (₱)"];
+                const discountRows = discountData.breakdown.map(item => [
+                    item.type,
+                    item.count.toString(),
+                    item.total.toFixed(2)
+                ]);
+                
+                doc.autoTable({
+                    head: [discountColumn],
+                    body: discountRows,
+                    startY: yPos,
+                    theme: 'striped',
+                    headStyles: {
+                        fillColor: [155, 89, 182],
+                        textColor: [255, 255, 255],
+                        fontStyle: 'bold',
+                        fontSize: 10
+                    },
+                    bodyStyles: {
+                        fontSize: 9
+                    },
+                    columnStyles: {
+                        0: { cellWidth: 60 },
+                        1: { cellWidth: 30, halign: 'center' },
+                        2: { cellWidth: 50, halign: 'right' }
+                    },
+                    margin: { left: margin, right: margin }
+                });
+                
+                yPos = doc.lastAutoTable.finalY + 10;
+            }
+        }
+        
+        // ========== SUMMARY STATISTICS CARD ==========
+        // Check if we need a new page
+        if (yPos > 250) {
+            doc.addPage();
+            yPos = 20;
+        }
+        
+        // Add footer on each page
         const pageCount = doc.internal.getNumberOfPages();
         for (let i = 1; i <= pageCount; i++) {
             doc.setPage(i);
+            
+            // Add footer line
+            doc.setDrawColor(52, 152, 219);
+            doc.setLineWidth(0.5);
+            doc.line(margin, doc.internal.pageSize.height - 15, pageWidth - margin, doc.internal.pageSize.height - 15);
+            
             doc.setFontSize(8);
             doc.setTextColor(150, 150, 150);
             doc.text(
                 `Page ${i} of ${pageCount}`,
-                doc.internal.pageSize.width - 20,
-                doc.internal.pageSize.height - 10
+                pageWidth - margin,
+                doc.internal.pageSize.height - 10,
+                { align: 'right' }
             );
             doc.text(
                 'GMDC BOTICA Pharmacy Management System',
-                14,
+                margin,
                 doc.internal.pageSize.height - 10
+            );
+            
+            // Add timestamp at bottom
+            doc.text(
+                `Report generated on ${formatDateForPDF(now)}`,
+                pageWidth / 2,
+                doc.internal.pageSize.height - 5,
+                { align: 'center' }
             );
         }
         
@@ -2632,7 +3232,176 @@ async function downloadReportPDF() {
         
     } catch (error) {
         console.error("Error generating report PDF:", error);
-        showNotification('Error generating PDF report', 'error');
+        showNotification('Error generating PDF report: ' + error.message, 'error');
+    }
+}
+
+// Helper function to get detailed sales data for the period
+async function getDetailedSalesData(selectedMonth, selectedYear) {
+    try {
+        const period = document.getElementById('reportPeriod')?.value || 'daily';
+        const startDate = new Date(selectedYear, selectedMonth, 1);
+        startDate.setHours(0, 0, 0, 0);
+        
+        const endDate = new Date(selectedYear, selectedMonth + 1, 1);
+        endDate.setHours(0, 0, 0, 0);
+        
+        const salesQuery = query(
+            collection(db, "sales"),
+            where("date", ">=", Timestamp.fromDate(startDate)),
+            where("date", "<", Timestamp.fromDate(endDate)),
+            orderBy("date", "asc")
+        );
+        
+        const salesSnapshot = await getDocs(salesQuery);
+        const labels = [];
+        const data = [];
+        const transactionCounts = [];
+        
+        if (period === 'daily') {
+            const daysInMonth = new Date(selectedYear, selectedMonth + 1, 0).getDate();
+            const dailyData = new Array(daysInMonth).fill(0);
+            const dailyCount = new Array(daysInMonth).fill(0);
+            
+            salesSnapshot.forEach(doc => {
+                const sale = doc.data();
+                const saleDate = sale.date.toDate();
+                const day = saleDate.getDate() - 1;
+                if (day >= 0 && day < daysInMonth) {
+                    dailyData[day] += sale.total || 0;
+                    dailyCount[day]++;
+                }
+            });
+            
+            for (let i = 1; i <= daysInMonth; i++) {
+                labels.push(`Day ${i}`);
+            }
+            data.push(...dailyData);
+            transactionCounts.push(...dailyCount);
+        } else if (period === 'weekly') {
+            const weeksInMonth = 5;
+            const weeklyData = new Array(weeksInMonth).fill(0);
+            const weeklyCount = new Array(weeksInMonth).fill(0);
+            
+            salesSnapshot.forEach(doc => {
+                const sale = doc.data();
+                const saleDate = sale.date.toDate();
+                const dayOfMonth = saleDate.getDate();
+                const weekIndex = Math.floor((dayOfMonth - 1) / 7);
+                if (weekIndex < weeksInMonth) {
+                    weeklyData[weekIndex] += sale.total || 0;
+                    weeklyCount[weekIndex]++;
+                }
+            });
+            
+            for (let i = 0; i < weeksInMonth; i++) {
+                labels.push(`Week ${i + 1}`);
+            }
+            data.push(...weeklyData);
+            transactionCounts.push(...weeklyCount);
+        }
+        
+        return { labels, data, transactionCounts };
+    } catch (error) {
+        console.error("Error getting detailed sales data:", error);
+        return { labels: [], data: [], transactionCounts: [] };
+    }
+}
+
+// Helper function to get payment method data
+async function getPaymentMethodData(selectedMonth, selectedYear) {
+    try {
+        const startDate = new Date(selectedYear, selectedMonth, 1);
+        startDate.setHours(0, 0, 0, 0);
+        
+        const endDate = new Date(selectedYear, selectedMonth + 1, 1);
+        endDate.setHours(0, 0, 0, 0);
+        
+        const salesQuery = query(
+            collection(db, "sales"),
+            where("date", ">=", Timestamp.fromDate(startDate)),
+            where("date", "<", Timestamp.fromDate(endDate))
+        );
+        
+        const salesSnapshot = await getDocs(salesQuery);
+        const paymentMethods = {};
+        
+        salesSnapshot.forEach(doc => {
+            const sale = doc.data();
+            const method = sale.paymentMethod || 'Cash';
+            
+            if (!paymentMethods[method]) {
+                paymentMethods[method] = {
+                    method: method,
+                    count: 0,
+                    total: 0
+                };
+            }
+            paymentMethods[method].count++;
+            paymentMethods[method].total += sale.total || 0;
+        });
+        
+        return Object.values(paymentMethods);
+    } catch (error) {
+        console.error("Error getting payment method data:", error);
+        return [];
+    }
+}
+
+// Helper function to get discount data
+async function getDiscountData(selectedMonth, selectedYear) {
+    try {
+        const startDate = new Date(selectedYear, selectedMonth, 1);
+        startDate.setHours(0, 0, 0, 0);
+        
+        const endDate = new Date(selectedYear, selectedMonth + 1, 1);
+        endDate.setHours(0, 0, 0, 0);
+        
+        const salesQuery = query(
+            collection(db, "sales"),
+            where("date", ">=", Timestamp.fromDate(startDate)),
+            where("date", "<", Timestamp.fromDate(endDate))
+        );
+        
+        const salesSnapshot = await getDocs(salesQuery);
+        let totalDiscounts = 0;
+        let discountedTransactions = 0;
+        const breakdown = [];
+        
+        salesSnapshot.forEach(doc => {
+            const sale = doc.data();
+            const discountAmount = sale.discountAmount || 0;
+            const discountPercentage = sale.discountPercentage || 0;
+            
+            if (discountAmount > 0) {
+                totalDiscounts += discountAmount;
+                discountedTransactions++;
+                
+                let discountType = 'Other';
+                if (discountPercentage === 20) {
+                    discountType = 'Senior/PWD (20%)';
+                } else if (discountPercentage > 0) {
+                    discountType = `${discountPercentage}% Discount`;
+                }
+                
+                const existingType = breakdown.find(item => item.type === discountType);
+                if (existingType) {
+                    existingType.count++;
+                    existingType.total += discountAmount;
+                } else {
+                    breakdown.push({
+                        type: discountType,
+                        count: 1,
+                        total: discountAmount
+                    });
+                }
+            }
+        });
+        
+        return { totalDiscounts, discountedTransactions, breakdown };
+    } catch (error) {
+        console.error("Error getting discount data:", error);
+        return { totalDiscounts: 0, discountedTransactions: 0, breakdown: [] };
     }
 }
 
@@ -2808,6 +3577,7 @@ function populateYearDropdown() {
 }
 
 // Generate Report based on selected month and year
+// Generate Report based on selected month and year (with refund handling)
 async function generateReport() {
     try {
         console.log("Generating report...");
@@ -2838,6 +3608,7 @@ async function generateReport() {
         let data = [];
         let totalSales = 0;
         let totalTransactions = 0;
+        let totalRefunds = 0;
         let averageSale = 0;
         
         // Create date range for selected month
@@ -2847,7 +3618,7 @@ async function generateReport() {
         const endDate = new Date(selectedYear, selectedMonth + 1, 1);
         endDate.setHours(0, 0, 0, 0);
         
-        // Get sales for the selected month
+        // Get all sales for the selected month
         const salesQuery = query(
             collection(db, "sales"),
             where("date", ">=", Timestamp.fromDate(startDate)),
@@ -2855,8 +3626,24 @@ async function generateReport() {
             orderBy("date", "asc")
         );
         
-        const salesSnapshot = await getDocs(salesQuery);
-        console.log(`Found ${salesSnapshot.size} sales for this period`);
+        // Get all returns for the selected month
+        const returnsQuery = query(
+            collection(db, "returns"),
+            where("date", ">=", Timestamp.fromDate(startDate)),
+            where("date", "<", Timestamp.fromDate(endDate))
+        );
+        
+        const [salesSnapshot, returnsSnapshot] = await Promise.all([
+            getDocs(salesQuery),
+            getDocs(returnsQuery)
+        ]);
+        
+        console.log(`Found ${salesSnapshot.size} sales and ${returnsSnapshot.size} returns for this period`);
+        
+        // Calculate total refunds
+        returnsSnapshot.forEach(doc => {
+            totalRefunds += doc.data().amount || 0;
+        });
         
         const sales = [];
         salesSnapshot.forEach(doc => {
@@ -2870,7 +3657,9 @@ async function generateReport() {
                 const daysInMonth = new Date(selectedYear, selectedMonth + 1, 0).getDate();
                 const dailyData = new Array(daysInMonth).fill(0);
                 const dailyCount = new Array(daysInMonth).fill(0);
+                const dailyRefunds = new Array(daysInMonth).fill(0);
                 
+                // Process sales
                 sales.forEach(sale => {
                     const saleDate = sale.date.toDate();
                     const day = saleDate.getDate() - 1; // 0-based index
@@ -2880,13 +3669,26 @@ async function generateReport() {
                     }
                 });
                 
+                // Process refunds
+                returnsSnapshot.forEach(doc => {
+                    const refund = doc.data();
+                    const refundDate = refund.date.toDate();
+                    const day = refundDate.getDate() - 1;
+                    if (day >= 0 && day < daysInMonth) {
+                        dailyRefunds[day] += refund.amount || 0;
+                    }
+                });
+                
+                // Calculate net sales (sales - refunds)
+                const netDailyData = dailyData.map((sale, index) => sale - dailyRefunds[index]);
+                
                 // Create labels (1, 2, 3...)
                 labels = [];
                 for (let i = 1; i <= daysInMonth; i++) {
                     labels.push(`${i}`);
                 }
-                data = dailyData;
-                totalSales = dailyData.reduce((sum, val) => sum + val, 0);
+                data = netDailyData;
+                totalSales = netDailyData.reduce((sum, val) => sum + val, 0);
                 totalTransactions = dailyCount.reduce((sum, val) => sum + val, 0);
                 break;
                 
@@ -2895,6 +3697,7 @@ async function generateReport() {
                 const weeksInMonth = 5; // Max weeks in a month
                 const weeklyData = new Array(weeksInMonth).fill(0);
                 const weeklyCount = new Array(weeksInMonth).fill(0);
+                const weeklyRefunds = new Array(weeksInMonth).fill(0);
                 
                 sales.forEach(sale => {
                     const saleDate = sale.date.toDate();
@@ -2906,9 +3709,21 @@ async function generateReport() {
                     }
                 });
                 
+                returnsSnapshot.forEach(doc => {
+                    const refund = doc.data();
+                    const refundDate = refund.date.toDate();
+                    const dayOfMonth = refundDate.getDate();
+                    const weekIndex = Math.floor((dayOfMonth - 1) / 7);
+                    if (weekIndex < weeksInMonth) {
+                        weeklyRefunds[weekIndex] += refund.amount || 0;
+                    }
+                });
+                
+                const netWeeklyData = weeklyData.map((sale, index) => sale - weeklyRefunds[index]);
+                
                 labels = ['Week 1', 'Week 2', 'Week 3', 'Week 4', 'Week 5'];
-                data = weeklyData;
-                totalSales = weeklyData.reduce((sum, val) => sum + val, 0);
+                data = netWeeklyData;
+                totalSales = netWeeklyData.reduce((sum, val) => sum + val, 0);
                 totalTransactions = weeklyCount.reduce((sum, val) => sum + val, 0);
                 break;
                 
@@ -2918,6 +3733,7 @@ async function generateReport() {
                 data = [];
                 const monthlyData = [];
                 const monthlyCount = [];
+                const monthlyRefunds = [];
                 
                 for (let i = 5; i >= 0; i--) {
                     const monthDate = new Date(selectedYear, selectedMonth - i, 1);
@@ -2934,9 +3750,21 @@ async function generateReport() {
                         where("date", "<", Timestamp.fromDate(monthEnd))
                     );
                     
-                    const monthSalesSnapshot = await getDocs(monthSalesQuery);
+                    // Get returns for this month
+                    const monthReturnsQuery = query(
+                        collection(db, "returns"),
+                        where("date", ">=", Timestamp.fromDate(monthStart)),
+                        where("date", "<", Timestamp.fromDate(monthEnd))
+                    );
+                    
+                    const [monthSalesSnapshot, monthReturnsSnapshot] = await Promise.all([
+                        getDocs(monthSalesQuery),
+                        getDocs(monthReturnsQuery)
+                    ]);
+                    
                     let monthTotal = 0;
                     let monthCount = 0;
+                    let monthRefund = 0;
                     
                     monthSalesSnapshot.forEach(doc => {
                         const sale = doc.data();
@@ -2944,23 +3772,32 @@ async function generateReport() {
                         monthCount++;
                     });
                     
+                    monthReturnsSnapshot.forEach(doc => {
+                        const refund = doc.data();
+                        monthRefund += refund.amount || 0;
+                    });
+                    
+                    const netMonthTotal = monthTotal - monthRefund;
+                    
                     labels.push(monthDate.toLocaleDateString('en-US', { month: 'short', year: 'numeric' }));
-                    data.push(monthTotal);
-                    monthlyData.push(monthTotal);
+                    data.push(netMonthTotal);
+                    monthlyData.push(netMonthTotal);
                     monthlyCount.push(monthCount);
+                    monthlyRefunds.push(monthRefund);
                 }
                 
                 totalSales = monthlyData.reduce((sum, val) => sum + val, 0);
                 totalTransactions = monthlyCount.reduce((sum, val) => sum + val, 0);
+                totalRefunds = monthlyRefunds.reduce((sum, val) => sum + val, 0);
                 break;
         }
         
         averageSale = totalTransactions > 0 ? totalSales / totalTransactions : 0;
         
-        // Display report
-        displayFixedReport(period, labels, data, totalSales, totalTransactions, averageSale, selectedMonth, selectedYear);
+        // Display report with refund information
+        displayFixedReport(period, labels, data, totalSales, totalTransactions, averageSale, selectedMonth, selectedYear, totalRefunds);
         
-        // Now get product sales breakdown
+        // Now get product sales breakdown (with refund adjustments)
         await loadProductSalesBreakdown(selectedMonth, selectedYear);
         
     } catch (error) {
@@ -2974,6 +3811,7 @@ async function generateReport() {
 }
 
 // Load Product Sales Breakdown
+// Load Product Sales Breakdown with refund adjustments
 async function loadProductSalesBreakdown(selectedMonth, selectedYear) {
     try {
         const productSalesContainer = document.getElementById('productSalesBreakdown');
@@ -2993,12 +3831,25 @@ async function loadProductSalesBreakdown(selectedMonth, selectedYear) {
             where("date", "<", Timestamp.fromDate(endDate))
         );
         
-        const salesSnapshot = await getDocs(salesQuery);
+        // Get all returns for the selected month
+        const returnsQuery = query(
+            collection(db, "returns"),
+            where("date", ">=", Timestamp.fromDate(startDate)),
+            where("date", "<", Timestamp.fromDate(endDate))
+        );
+        
+        const [salesSnapshot, returnsSnapshot] = await Promise.all([
+            getDocs(salesQuery),
+            getDocs(returnsQuery)
+        ]);
         
         // Aggregate product sales
         const productSales = {};
+        const productRefunds = {};
         let totalItemsSold = 0;
+        let totalRefundedItems = 0;
         
+        // Process sales
         salesSnapshot.forEach(doc => {
             const sale = doc.data();
             if (sale.items && Array.isArray(sale.items)) {
@@ -3013,22 +3864,52 @@ async function loadProductSalesBreakdown(selectedMonth, selectedYear) {
                     }
                     productSales[productName].quantity += item.quantity || 0;
                     productSales[productName].revenue += (item.price * item.quantity) || 0;
-                    totalItemsSold += item.quantity || 0;
                 });
             }
         });
         
-        // Convert to array and sort by quantity sold (descending)
-        const productSalesArray = Object.entries(productSales).map(([name, data]) => ({
-            name,
-            quantity: data.quantity,
-            revenue: data.revenue
-        }));
+        // Process refunds
+        returnsSnapshot.forEach(doc => {
+            const refund = doc.data();
+            const productName = refund.productName || 'Unknown Product';
+            
+            if (!productRefunds[productName]) {
+                productRefunds[productName] = {
+                    quantity: 0,
+                    amount: 0
+                };
+            }
+            productRefunds[productName].quantity += refund.quantity || 0;
+            productRefunds[productName].amount += refund.amount || 0;
+            totalRefundedItems += refund.quantity || 0;
+        });
         
-        productSalesArray.sort((a, b) => b.quantity - a.quantity);
+        // Calculate net sales (sales - refunds)
+        const netProductSales = [];
+        for (const [name, saleData] of Object.entries(productSales)) {
+            const refundData = productRefunds[name] || { quantity: 0, amount: 0 };
+            const netQuantity = saleData.quantity - refundData.quantity;
+            const netRevenue = saleData.revenue - refundData.amount;
+            
+            if (netQuantity > 0 || netRevenue > 0) {
+                netProductSales.push({
+                    name: name,
+                    quantity: netQuantity,
+                    revenue: netRevenue,
+                    originalQuantity: saleData.quantity,
+                    refundedQuantity: refundData.quantity,
+                    refundedAmount: refundData.amount
+                });
+            }
+            
+            totalItemsSold += netQuantity;
+        }
         
-        // Display product sales breakdown
-        displayProductSalesBreakdown(productSalesArray, totalItemsSold);
+        // Sort by net quantity sold (descending)
+        netProductSales.sort((a, b) => b.quantity - a.quantity);
+        
+        // Display product sales breakdown with refund information
+        displayProductSalesBreakdown(netProductSales, totalItemsSold, totalRefundedItems);
         
     } catch (error) {
         console.error("Error loading product sales breakdown:", error);
@@ -3040,7 +3921,8 @@ async function loadProductSalesBreakdown(selectedMonth, selectedYear) {
 }
 
 // Display Product Sales Breakdown
-function displayProductSalesBreakdown(productSales, totalItemsSold) {
+// Display Product Sales Breakdown with refund info
+function displayProductSalesBreakdown(productSales, totalItemsSold, totalRefundedItems = 0) {
     const container = document.getElementById('productSalesBreakdown');
     if (!container) return;
     
@@ -3051,17 +3933,21 @@ function displayProductSalesBreakdown(productSales, totalItemsSold) {
     
     let html = `
         <div class="product-sales-header">
-            <h3><i class="fas fa-chart-pie"></i> Product Sales Breakdown</h3>
-            <p>Total Items Sold: ${totalItemsSold}</p>
+            <h3><i class="fas fa-chart-pie"></i> Product Sales Breakdown (Net)</h3>
+            <div class="sales-summary">
+                <p>Total Items Sold: <strong>${totalItemsSold}</strong> pcs</p>
+                ${totalRefundedItems > 0 ? `<p class="refund-summary">Items Refunded: <span style="color: #e74c3c;">${totalRefundedItems} pcs</span></p>` : ''}
+            </div>
         </div>
         <div class="product-sales-table-container">
             <table class="product-sales-table">
                 <thead>
                     <tr>
                         <th>Product Name</th>
-                        <th>Quantity Sold</th>
-                        <th>Revenue (₱)</th>
+                        <th>Net Qty Sold</th>
+                        <th>Net Revenue (₱)</th>
                         <th>% of Total</th>
+                        ${totalRefundedItems > 0 ? '<th>Refunded Qty</th>' : ''}
                     </tr>
                 </thead>
                 <tbody>
@@ -3075,6 +3961,13 @@ function displayProductSalesBreakdown(productSales, totalItemsSold) {
                 <td><strong>${product.quantity}</strong> pcs</td>
                 <td>₱${product.revenue.toFixed(2)}</td>
                 <td>${percentage}%</td>
+                ${totalRefundedItems > 0 ? `
+                <td>
+                    ${product.refundedQuantity > 0 ? 
+                        `<span style="color: #e74c3c;">${product.refundedQuantity} pcs</span>` : 
+                        '<span style="color: #95a5a6;">-</span>'}
+                </td>
+                ` : ''}
             </tr>
         `;
     });
@@ -3089,7 +3982,8 @@ function displayProductSalesBreakdown(productSales, totalItemsSold) {
 }
 
 // Display report with chart
-function displayFixedReport(period, labels, data, totalSales, totalTransactions, averageSale, selectedMonth, selectedYear) {
+// Display report with chart and refund info
+function displayFixedReport(period, labels, data, totalSales, totalTransactions, averageSale, selectedMonth, selectedYear, totalRefunds = 0) {
     const reportContent = document.getElementById('reportStats');
     const reportSummary = document.getElementById('reportSummary');
     const chartCanvas = document.getElementById('reportChart');
@@ -3099,7 +3993,7 @@ function displayFixedReport(period, labels, data, totalSales, totalTransactions,
     const monthNames = ['January', 'February', 'March', 'April', 'May', 'June', 
                         'July', 'August', 'September', 'October', 'November', 'December'];
     
-    // Update stats
+    // Update stats with refund information
     reportContent.innerHTML = `
         <div class="stats-grid">
             <div class="stat-card">
@@ -3107,7 +4001,7 @@ function displayFixedReport(period, labels, data, totalSales, totalTransactions,
                     <i class="fas fa-chart-line"></i>
                 </div>
                 <div class="stat-info">
-                    <h3>Total Sales</h3>
+                    <h3>Net Sales</h3>
                     <p>₱${totalSales.toFixed(2)}</p>
                 </div>
             </div>
@@ -3129,15 +4023,34 @@ function displayFixedReport(period, labels, data, totalSales, totalTransactions,
                     <p>₱${averageSale.toFixed(2)}</p>
                 </div>
             </div>
+            ${totalRefunds > 0 ? `
+            <div class="stat-card refund-stat">
+                <div class="stat-icon" style="background: #e74c3c;">
+                    <i class="fas fa-undo-alt"></i>
+                </div>
+                <div class="stat-info">
+                    <h3>Total Refunds</h3>
+                    <p style="color: #e74c3c;">-₱${totalRefunds.toFixed(2)}</p>
+                </div>
+            </div>
+            ` : ''}
         </div>
     `;
     
-    // Add summary
+    // Add summary with refund note
     if (reportSummary) {
+        const grossSales = totalSales + totalRefunds;
         reportSummary.innerHTML = `
             <div class="report-period-info">
                 <h3>Report Period: ${monthNames[selectedMonth]} ${selectedYear}</h3>
-                <p>Showing ${period} sales data for the selected period.</p>
+                <p>Showing ${period} net sales data for the selected period.</p>
+                ${totalRefunds > 0 ? `
+                <div class="refund-summary">
+                    <p><strong>Gross Sales:</strong> ₱${grossSales.toFixed(2)}</p>
+                    <p><strong>Total Refunds:</strong> <span style="color: #e74c3c;">-₱${totalRefunds.toFixed(2)}</span></p>
+                    <p><strong>Net Sales:</strong> ₱${totalSales.toFixed(2)}</p>
+                </div>
+                ` : ''}
             </div>
         `;
     }
@@ -3147,7 +4060,7 @@ function displayFixedReport(period, labels, data, totalSales, totalTransactions,
         window.reportChartInstance.destroy();
     }
     
-    // Create new chart
+    // Create new chart with tooltip showing refund info
     const ctx = chartCanvas.getContext('2d');
     
     // Chart configuration
@@ -3156,7 +4069,7 @@ function displayFixedReport(period, labels, data, totalSales, totalTransactions,
         data: {
             labels: labels,
             datasets: [{
-                label: period === 'daily' ? 'Daily Sales' : (period === 'weekly' ? 'Weekly Sales' : 'Monthly Sales'),
+                label: period === 'daily' ? 'Net Daily Sales' : (period === 'weekly' ? 'Net Weekly Sales' : 'Net Monthly Sales'),
                 data: data,
                 backgroundColor: 'rgba(52, 152, 219, 0.7)',
                 borderColor: 'rgba(52, 152, 219, 1)',
@@ -3171,10 +4084,18 @@ function displayFixedReport(period, labels, data, totalSales, totalTransactions,
             plugins: {
                 title: {
                     display: true,
-                    text: `${monthNames[selectedMonth]} ${selectedYear} - ${period.charAt(0).toUpperCase() + period.slice(1)} Sales Report`,
+                    text: `${monthNames[selectedMonth]} ${selectedYear} - Net ${period.charAt(0).toUpperCase() + period.slice(1)} Sales Report`,
                     font: {
                         size: 16,
                         weight: 'bold'
+                    }
+                },
+                subtitle: {
+                    display: totalRefunds > 0,
+                    text: `(Refunds: ₱${totalRefunds.toFixed(2)})`,
+                    color: '#e74c3c',
+                    font: {
+                        size: 12
                     }
                 },
                 legend: {

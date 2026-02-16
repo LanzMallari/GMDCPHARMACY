@@ -503,17 +503,35 @@
         </div>
     </div>
 
-    <!-- Sale Details Modal - Centered Panel -->
-    <div id="saleDetailsModal" class="modal">
-        <div class="modal-content sale-panel">
-            <div class="sale-panel-header">
-                <h2><i class="fas fa-receipt"></i> Sale Details</h2>
-                <span class="close" onclick="closeSalePanel()">&times;</span>
-            </div>
-            <div class="sale-panel-body" id="salePanelBody">
-                <!-- Content will be loaded here -->
+    <!-- Sale Details Modal (replace existing one) -->
+<div id="saleDetailsModal" class="modal">
+    <div class="modal-content sale-panel">
+        <div class="sale-panel-header">
+            <h2><i class="fas fa-receipt"></i> Sale Details</h2>
+            <span class="close" onclick="closeSalePanel()">&times;</span>
+        </div>
+        <div class="sale-panel-body" id="salePanelBody">
+            <!-- Content will be loaded here -->
+        </div>
+    </div>
+</div>
+
+<!-- Today's Sales Modal (update) -->
+<div id="todaySalesModal" class="modal">
+    <div class="modal-content dashboard-modal">
+        <div class="modal-header">
+            <h2><i class="fas fa-chart-line" style="color: #27ae60;"></i> Today's Sales</h2>
+            <span class="close">&times;</span>
+        </div>
+        <div class="modal-body" id="todaySalesModalBody">
+            <!-- Content will be loaded dynamically -->
+            <div class="modal-loading">
+                <i class="fas fa-spinner fa-spin"></i>
+                <p>Loading today's sales...</p>
             </div>
         </div>
+    </div>
+</div>
     </div><!-- Low Stock Modal -->
 <div id="lowStockModal" class="modal">
     <div class="modal-content dashboard-modal">
