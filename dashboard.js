@@ -1231,6 +1231,8 @@ async function viewSaleDetailsModal(saleId) {
 }
 
 // Open Refund from Sale
+// Open Refund from Sale - FIXED for partial returns
+// Open Refund from Sale - FIXED for partial returns
 async function openRefundFromSale(saleId) {
     try {
         const saleRef = doc(db, "sales", saleId);
@@ -1243,12 +1245,15 @@ async function openRefundFromSale(saleId) {
         
         const sale = saleDoc.data();
         
-        // Check for existing returns
+        // Get all returns for this sale
         const returnsSnapshot = await getDocs(query(collection(db, "returns"), where("originalSaleId", "==", saleId)));
-        const returnedProducts = new Set();
+        
+        // Calculate returned quantities per product
+        const returnedQuantities = new Map();
         returnsSnapshot.forEach(doc => {
             const ret = doc.data();
-            returnedProducts.add(ret.productId);
+            const currentQty = returnedQuantities.get(ret.productId) || 0;
+            returnedQuantities.set(ret.productId, currentQty + ret.quantity);
         });
         
         // Open return modal with this sale preselected
@@ -1264,27 +1269,34 @@ async function openRefundFromSale(saleId) {
         
         returnModal.dataset.saleId = saleId;
         
-        // Show product selection (only items not yet returned)
+        // Show product selection with available quantities
         const resultsDiv = document.getElementById('returnSearchResults');
         resultsDiv.innerHTML = '<h4>Select a product to return:</h4>';
         
         let hasReturnableItems = false;
         sale.items.forEach(item => {
-            if (!returnedProducts.has(item.productId)) {
+            const returnedQty = returnedQuantities.get(item.productId) || 0;
+            const availableQty = item.quantity - returnedQty;
+            
+            if (availableQty > 0) {
                 hasReturnableItems = true;
                 const itemDiv = document.createElement('div');
                 itemDiv.className = 'search-result-item';
                 itemDiv.innerHTML = `
                     <span class="product-name">${item.name}</span>
-                    <span class="product-details">Qty: ${item.quantity} - ₱${item.price.toFixed(2)}</span>
+                    <span class="product-details">
+                        Original: ${item.quantity} | 
+                        Returned: ${returnedQty} | 
+                        Available: <strong>${availableQty}</strong> - ₱${item.price.toFixed(2)} each
+                    </span>
                 `;
-                itemDiv.addEventListener('click', () => selectProductForReturn(saleId, item.productId, item.name, item.price, item.quantity));
+                itemDiv.addEventListener('click', () => selectProductForReturn(saleId, item.productId, item.name, item.price, availableQty));
                 resultsDiv.appendChild(itemDiv);
             }
         });
         
         if (!hasReturnableItems) {
-            resultsDiv.innerHTML = '<p class="no-data">All items in this sale have already been returned</p>';
+            resultsDiv.innerHTML = '<p class="no-data">All items in this sale have been fully returned</p>';
         }
         
         document.getElementById('returnSearch').value = '';
@@ -2557,24 +2569,26 @@ async function selectSaleForReturn(saleId) {
 }
 
 // Select specific product for return
-function selectProductForReturn(saleId, productId, productName, price, maxQuantity) {
+// Select specific product for return
+function selectProductForReturn(saleId, productId, productName, price, availableQty) {
     const selectedInfo = document.getElementById('selectedReturnInfo');
     
     document.getElementById('returnInvoice').textContent = saleId.slice(-8).toUpperCase();
     document.getElementById('returnProductName').textContent = productName;
     document.getElementById('returnPrice').textContent = price.toFixed(2);
-    document.getElementById('returnAvailableQty').textContent = maxQuantity;
+    document.getElementById('returnAvailableQty').textContent = availableQty;
     
     const returnQuantity = document.getElementById('returnQuantity');
-    returnQuantity.max = maxQuantity;
+    returnQuantity.max = availableQty;
     returnQuantity.value = 1;
+    returnQuantity.min = 1;
     
     // Store data in dataset
     selectedInfo.dataset.saleId = saleId;
     selectedInfo.dataset.productId = productId;
     selectedInfo.dataset.productName = productName;
     selectedInfo.dataset.price = price;
-    selectedInfo.dataset.maxQuantity = maxQuantity;
+    selectedInfo.dataset.maxQuantity = availableQty;
     
     // Clear search results
     document.getElementById('returnSearchResults').innerHTML = '';
@@ -2583,8 +2597,9 @@ function selectProductForReturn(saleId, productId, productName, price, maxQuanti
     // Show selected info
     selectedInfo.style.display = 'block';
 }
-
 // Process Return - FIXED to prevent double processing
+// Process Return - FIXED to prevent double processing
+// Process Return - FIXED for partial returns
 const processReturnBtn = document.getElementById('processReturnBtn');
 if (processReturnBtn) {
     processReturnBtn.addEventListener('click', async function(e) {
@@ -2632,9 +2647,20 @@ if (processReturnBtn) {
             
             const sale = saleDoc.data();
             
-            // Check if already returned
-            if (sale.returns && sale.returns.some(r => r.productId === productId)) {
-                showNotification('This item has already been returned', 'error');
+            // Get all returns for this sale to check total returned quantity
+            const returnsSnapshot = await getDocs(query(collection(db, "returns"), where("originalSaleId", "==", saleId)));
+            let totalReturnedQty = 0;
+            returnsSnapshot.forEach(doc => {
+                const ret = doc.data();
+                if (ret.productId === productId) {
+                    totalReturnedQty += ret.quantity;
+                }
+            });
+            
+            // Check if trying to return more than available
+            const originalQuantity = sale.items.find(item => item.productId === productId)?.quantity || 0;
+            if (totalReturnedQty + returnQuantity > originalQuantity) {
+                showNotification(`Cannot return more than ${originalQuantity - totalReturnedQty} items`, 'error');
                 isProcessingReturn = false;
                 processReturnBtn.disabled = false;
                 processReturnBtn.textContent = originalText;
@@ -2720,9 +2746,16 @@ if (processReturnBtn) {
             document.getElementById('returnModal').style.display = 'none';
             
             // Refresh data
-            loadDashboardStats();
-            loadSalesHistory(currentSortOrder);
-            loadInventory();
+            await Promise.all([
+                loadDashboardStats(),
+                loadSalesHistory(currentSortOrder),
+                loadInventory()
+            ]);
+            
+            // Refresh today's sales modal if it's open
+            if (document.getElementById('todaySalesModal').style.display === 'block') {
+                openTodaySalesModal();
+            }
             
         } catch (error) {
             console.error("Error processing return:", error);
