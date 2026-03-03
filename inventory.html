@@ -1,0 +1,296 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=yes">
+    <title>Inventory - GMDC Pharmacy</title>
+    <link rel="stylesheet" href="css/style.css">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
+</head>
+<body>
+    <div class="dashboard">
+        <!-- Mobile Header -->
+        <div class="mobile-header">
+            <button class="burger-btn" id="burgerBtn">
+                <i class="fas fa-bars"></i>
+            </button>
+            <div class="mobile-logo">
+                <h2>GMDC BOTICA</h2>
+            </div>
+            <div class="mobile-notification">
+                <i class="fas fa-bell"></i>
+                <span class="badge">3</span>
+            </div>
+        </div>
+
+        <!-- Sidebar -->
+        <div class="sidebar" id="sidebar">
+            <div class="sidebar-header">
+                <h2>GMDC BOTICA</h2>
+                <p>Inventory System</p>
+            </div>
+            <div class="user-profile-sidebar">
+                <div class="user-avatar">
+                    <i class="fas fa-user-circle"></i>
+                </div>
+                <div class="user-info-sidebar">
+                    <div id="sidebarUserName">Loading...</div>
+                    <div id="sidebarUserEmail">Loading...</div>
+                </div>
+            </div>
+            <nav class="sidebar-nav">
+                <a href="dashboard.html" class="nav-item">
+                    <i class="fas fa-tachometer-alt"></i> <span>Dashboard</span>
+                </a>
+                <a href="inventory.html" class="nav-item active">
+                    <i class="fas fa-pills"></i> <span>Inventory</span>
+                </a>
+                <a href="pos.html" class="nav-item">
+                    <i class="fas fa-cash-register"></i> <span>Point of Sale</span>
+                </a>
+                <a href="sales.html" class="nav-item">
+                    <i class="fas fa-chart-line"></i> <span>Sales History</span>
+                </a>
+                <a href="reports.html" class="nav-item">
+                    <i class="fas fa-file-alt"></i> <span>Reports</span>
+                </a>
+            </nav>
+            <div class="sidebar-footer">
+                <button id="logout" class="logout-btn">
+                    <i class="fas fa-sign-out-alt"></i> <span>Logout</span>
+                </button>
+            </div>
+        </div>
+
+        <!-- Main Content -->
+        <div class="main-content">
+            <!-- Desktop Top Bar -->
+            <div class="desktop-top-bar">
+                <div class="top-bar-left">
+                    <div class="search-bar">
+                        <i class="fas fa-search"></i>
+                        <input type="text" placeholder="Search products...">
+                    </div>
+                </div>
+                <div class="top-bar-actions">
+                    <div class="notification">
+                        <i class="fas fa-bell"></i>
+                        <span class="badge">3</span>
+                    </div>
+                    <div class="date-time">
+                        <span id="currentDateTime"></span>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Mobile Search Bar -->
+            <div class="mobile-search-bar">
+                <i class="fas fa-search"></i>
+                <input type="text" placeholder="Search products...">
+            </div>
+
+            <!-- Welcome Message -->
+            <div class="welcome-message">
+                <h2>Welcome back, <span id="welcomeUserName">User</span>!</h2>
+                <p>Here's what's happening with your pharmacy today.</p>
+            </div>
+
+            <!-- Inventory Content -->
+            <div id="inventory-tab" class="tab-content active">
+                <div class="content-header">
+                    <h1 class="page-title">Inventory Management</h1>
+                    <button class="btn-primary" id="addProductBtn">
+                        <i class="fas fa-plus"></i> <span class="btn-text">Add Product</span>
+                    </button>
+                </div>
+                
+                <!-- Inventory Filters -->
+                <div class="inventory-filters">
+                    <input type="text" placeholder="Search products..." id="inventorySearch" class="mobile-full-width">
+                    <select id="categoryFilter" class="mobile-full-width">
+                        <option value="">All Categories</option>
+                        <option value="medicines">Medicines</option>
+                        <option value="vitamins">Personal Care</option>
+                        <option value="equipment">Drinks</option>
+                        <option value="personal-care">Personal Care</option>
+                    </select>
+                    <select id="stockFilter" class="mobile-full-width">
+                        <option value="">All Stock</option>
+                        <option value="low">Low Stock</option>
+                        <option value="out">Out of Stock</option>
+                    </select>
+                </div>
+
+                <!-- Inventory Table -->
+                <div class="table-container">
+                    <table class="inventory-table">
+                        <thead>
+                            <tr>
+                                <th>Code</th>
+                                <th>Brand Name</th>
+                                <th>Generic Name</th>
+                                <th>Category</th>
+                                <th>Price</th>
+                                <th>Stock</th>
+                                <th>Soon to Expire Qty</th>
+                                <th>Actions</th>
+                            </tr>
+                        </thead>
+                        <tbody id="inventoryTableBody">
+                            <!-- Inventory items will be loaded here -->
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Modals -->
+    <div id="productTypeModal" class="modal">
+        <div class="modal-content" style="max-width: 400px;">
+            <div class="modal-header">
+                <h2><i class="fas fa-cube"></i> Select Product Type</h2>
+                <span class="close" onclick="closeModal('productTypeModal')">&times;</span>
+            </div>
+            <div class="modal-body" style="padding: 20px;">
+                <div class="product-type-options">
+                    <div class="product-type-card" id="selectExistingProduct" style="cursor: pointer; border: 2px solid #3498db; border-radius: 10px; padding: 20px; margin-bottom: 15px; text-align: center;">
+                        <i class="fas fa-boxes" style="font-size: 48px; color: #3498db;"></i>
+                        <h3>Add Existing Product</h3>
+                        <p>Add stock to an existing product</p>
+                    </div>
+                    
+                    <div class="product-type-card" id="addNewProduct" style="cursor: pointer; border: 2px solid #27ae60; border-radius: 10px; padding: 20px; text-align: center;">
+                        <i class="fas fa-plus-circle" style="font-size: 48px; color: #27ae60;"></i>
+                        <h3>Add New Product</h3>
+                        <p>Create a brand new product</p>
+                    </div>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn-secondary" onclick="closeModal('productTypeModal')">Cancel</button>
+            </div>
+        </div>
+    </div>
+
+    <div id="addExistingProductModal" class="modal">
+        <div class="modal-content" style="max-width: 500px;">
+            <div class="modal-header">
+                <h2><i class="fas fa-boxes"></i> Add Stock to Existing Product</h2>
+                <span class="close" onclick="closeModal('addExistingProductModal')">&times;</span>
+            </div>
+            <div class="modal-body">
+                <div class="form-group">
+                    <label>Search Product</label>
+                    <input type="text" id="existingProductSearch" placeholder="Type product name or code..." class="form-control">
+                </div>
+                <div id="existingProductResults" style="max-height: 300px; overflow-y: auto; margin: 15px 0;"></div>
+                <div id="selectedProductInfo" style="display: none; background: #f8f9fa; padding: 15px; border-radius: 8px;">
+                    <h4>Selected Product</h4>
+                    <p><strong>Brand Name:</strong> <span id="selectedProductName"></span></p>
+                    <p><strong>Generic Name:</strong> <span id="selectedGenericName"></span></p>
+                    <p><strong>Current Stock:</strong> <span id="selectedCurrentStock"></span></p>
+                    <p><strong>Price:</strong> ₱<span id="selectedProductPrice"></span></p>
+                    <div class="form-group">
+                        <label>Quantity to Add</label>
+                        <input type="number" id="addStockQuantity" min="1" class="form-control">
+                    </div>
+                    <div class="form-group">
+                        <label>New Expiry Date</label>
+                        <input type="date" id="newExpiryDate" class="form-control">
+                    </div>
+                    <button class="btn-primary" id="confirmAddStockBtn">Add Stock</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div id="productModal" class="modal">
+        <div class="modal-content mobile-modal">
+            <div class="modal-header">
+                <h2>Add New Product</h2>
+                <span class="close">&times;</span>
+            </div>
+            <form id="productForm">
+                <div class="form-group">
+                    <label>Product Code</label>
+                    <input type="text" id="productCode" required>
+                </div>
+                <div class="form-group">
+                    <label>Brand Name</label>
+                    <input type="text" id="productBrand" required>
+                </div>
+                <div class="form-group">
+                    <label>Generic Name</label>
+                    <input type="text" id="productGeneric" required>
+                </div>
+                <div class="form-group">
+                    <label>Category</label>
+                    <select id="productCategory" required>
+                        <option value="medicines">Medicines</option>
+                        <option value="vitamins">Personal Care</option>
+                        <option value="equipment">Drinks</option>
+                        <option value="personal-care">Personal Care</option>
+                    </select>
+                </div>
+                <div class="form-row mobile-row">
+                    <div class="form-group">
+                        <label>Price</label>
+                        <input type="number" id="productPrice" step="0.01" required>
+                    </div>
+                    <div class="form-group">
+                        <label>Stock</label>
+                        <input type="number" id="productStock" required>
+                    </div>
+                </div>
+                <div class="form-group">
+                    <label>Expiry Date (Optional - will create initial batch)</label>
+                    <input type="date" id="productExpiry">
+                </div>
+                <div class="form-group discount-group">
+                    <label class="discount-label">Discountable</label>
+                    <div class="radio-group">
+                        <label class="radio-label">
+                            <input type="radio" name="discountable" value="yes" id="discountableYes" checked>
+                            <span class="radio-text">Yes</span>
+                        </label>
+                        <label class="radio-label">
+                            <input type="radio" name="discountable" value="no" id="discountableNo">
+                            <span class="radio-text">No</span>
+                        </label>
+                    </div>
+                </div>
+                <div class="form-group">
+                    <label>Description</label>
+                    <textarea id="productDescription" rows="3"></textarea>
+                </div>
+                <button type="submit" class="btn-primary mobile-btn">Add Product</button>
+            </form>
+        </div>
+    </div>
+
+    <div id="batchModal" class="modal">
+        <div class="modal-content" style="max-width: 600px;">
+            <div class="modal-header">
+                <h2><i class="fas fa-layer-group"></i> Batch Management</h2>
+                <span class="close" onclick="closeModal('batchModal')">&times;</span>
+            </div>
+            <div class="modal-body" id="batchModalBody"></div>
+        </div>
+    </div>
+
+    <div id="stockItemsModal" class="modal">
+        <div class="modal-content" style="max-width: 700px;">
+            <div class="modal-header">
+                <h2><i class="fas fa-boxes"></i> Individual Stock Items</h2>
+                <span class="close" onclick="closeModal('stockItemsModal')">&times;</span>
+            </div>
+            <div class="modal-body" id="stockItemsModalBody"></div>
+        </div>
+    </div>
+
+    <script type="module" src="js/firebase-config.js"></script>
+    <script type="module" src="js/auth.js"></script>
+    <script type="module" src="js/inventory.js"></script>
+</body>
+</html>

@@ -3,10 +3,13 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=yes">
-    <title>Dashboard - GMDC Pharmacy</title>
+    <title>Reports - GMDC Pharmacy</title>
     <link rel="stylesheet" href="css/style.css">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.5.29/jspdf.plugin.autotable.min.js"></script>
 </head>
 <body>
     <div class="dashboard">
@@ -40,7 +43,7 @@
                 </div>
             </div>
             <nav class="sidebar-nav">
-                <a href="dashboard.html" class="nav-item active">
+                <a href="dashboard.html" class="nav-item">
                     <i class="fas fa-tachometer-alt"></i> <span>Dashboard</span>
                 </a>
                 <a href="inventory.html" class="nav-item">
@@ -52,7 +55,7 @@
                 <a href="sales.html" class="nav-item">
                     <i class="fas fa-chart-line"></i> <span>Sales History</span>
                 </a>
-                <a href="reports.html" class="nav-item">
+                <a href="reports.html" class="nav-item active">
                     <i class="fas fa-file-alt"></i> <span>Reports</span>
                 </a>
             </nav>
@@ -96,104 +99,75 @@
                 <p>Here's what's happening with your pharmacy today.</p>
             </div>
 
-            <!-- Dashboard Content -->
-            <div id="dashboard-tab" class="tab-content active">
-                <h1 class="page-title">Dashboard Overview</h1>
-                <div class="stats-grid">
-                    <div class="stat-card">
-                        <div class="stat-icon">
-                            <i class="fas fa-boxes"></i>
+            <!-- Reports Content -->
+            <div id="reports-tab" class="tab-content active">
+                <h1 class="page-title">Sales Reports</h1>
+                
+                <!-- Report Controls -->
+                <div class="reports-header">
+                    <div class="report-controls">
+                        <div class="month-year-selector">
+                            <select id="reportMonth" class="month-select">
+                                <option value="0">January</option>
+                                <option value="1">February</option>
+                                <option value="2">March</option>
+                                <option value="3">April</option>
+                                <option value="4">May</option>
+                                <option value="5">June</option>
+                                <option value="6">July</option>
+                                <option value="7">August</option>
+                                <option value="8">September</option>
+                                <option value="9">October</option>
+                                <option value="10">November</option>
+                                <option value="11">December</option>
+                            </select>
+                            <select id="reportYear" class="year-select"></select>
                         </div>
-                        <div class="stat-info">
-                            <h3>Total Products</h3>
-                            <p id="totalProducts">0</p>
+                        <div class="report-type-selector">
+                            <select id="reportPeriod" class="report-period-select">
+                                <option value="daily">Daily</option>
+                                <option value="weekly">Weekly</option>
+                                <option value="monthly">Monthly</option>
+                            </select>
                         </div>
-                    </div>
-                    <div class="stat-card" onclick="openLowStockModal()">
-                        <div class="stat-icon">
-                            <i class="fas fa-exclamation-triangle"></i>
-                        </div>
-                        <div class="stat-info">
-                            <h3>Low Stock</h3>
-                            <p id="lowStockCount">0</p>
-                        </div>
-                    </div>
-                    <div class="stat-card" onclick="openTodaySalesModal()">
-                        <div class="stat-icon">
-                            <i class="fas fa-dollar-sign"></i>
-                        </div>
-                        <div class="stat-info">
-                            <h3>Today's Sales</h3>
-                            <p id="todaySales">₱0.00</p>
-                        </div>
-                    </div>
-                    <div class="stat-card">
-                        <div class="stat-icon">
-                            <i class="fas fa-clock"></i>
-                        </div>
-                        <div class="stat-info">
-                            <h3>Expiring Soon</h3>
-                            <p id="expiringCount">0</p>
-                        </div>
+                        <button class="btn-primary" id="generateReportBtn">
+                            <i class="fas fa-chart-bar"></i> Generate Report
+                        </button>
+                        <button class="btn-secondary" id="downloadReportPDFBtn">
+                            <i class="fas fa-file-pdf"></i> Download PDF
+                        </button>
                     </div>
                 </div>
 
-                <!-- Recent Activities -->
-                <div class="recent-activities">
-                    <h2>Recent Activities</h2>
-                    <div class="activities-list" id="recentActivities">
-                        <!-- Activities will be loaded here -->
+                <!-- Report Container -->
+                <div class="report-container">
+                    <!-- Chart Section -->
+                    <div class="report-chart-container">
+                        <canvas id="reportChart"></canvas>
                     </div>
+                    
+                    <!-- Stats Section -->
+                    <div class="report-stats" id="reportStats"></div>
+                    
+                    <!-- Fast Moving Products Section -->
+                    <div class="fast-moving-products" id="fastMovingProducts">
+                        <div class="loading">Analyzing fast moving products...</div>
+                    </div>
+                    
+                    <!-- Product Sales Breakdown Section -->
+                    <div class="product-sales-breakdown" id="productSalesBreakdown">
+                        <div class="loading">Loading product sales data...</div>
+                    </div>
+                    
+                    <!-- Report Summary -->
+                    <div class="report-summary" id="reportSummary"></div>
                 </div>
-            </div>
-        </div>
-    </div>
-
-    <!-- Modals -->
-    <div id="lowStockModal" class="modal">
-        <div class="modal-content dashboard-modal">
-            <div class="modal-header">
-                <h2><i class="fas fa-exclamation-triangle" style="color: #f39c12;"></i> Low Stock Products</h2>
-                <span class="close">&times;</span>
-            </div>
-            <div class="modal-body" id="lowStockModalBody">
-                <div class="modal-loading">
-                    <i class="fas fa-spinner fa-spin"></i>
-                    <p>Loading low stock products...</p>
-                </div>
-            </div>
-        </div>
-    </div>
-
-    <div id="todaySalesModal" class="modal">
-        <div class="modal-content dashboard-modal">
-            <div class="modal-header">
-                <h2><i class="fas fa-chart-line" style="color: #27ae60;"></i> Today's Sales</h2>
-                <span class="close">&times;</span>
-            </div>
-            <div class="modal-body" id="todaySalesModalBody">
-                <div class="modal-loading">
-                    <i class="fas fa-spinner fa-spin"></i>
-                    <p>Loading today's sales...</p>
-                </div>
-            </div>
-        </div>
-    </div>
-
-    <div id="saleDetailsModal" class="modal">
-        <div class="modal-content sale-panel">
-            <div class="sale-panel-header">
-                <h2><i class="fas fa-receipt"></i> Sale Details</h2>
-                <span class="close" onclick="closeModal('saleDetailsModal')">&times;</span>
-            </div>
-            <div class="sale-panel-body" id="salePanelBody">
-                <!-- Content will be loaded here -->
             </div>
         </div>
     </div>
 
     <script type="module" src="js/firebase-config.js"></script>
     <script type="module" src="js/auth.js"></script>
-    <script type="module" src="js/dashboard.js"></script>
+    <script type="module" src="js/reports.js"></script>
 </body>
 </html>

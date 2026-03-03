@@ -1,0 +1,290 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=yes">
+    <title>Point of Sale - GMDC Pharmacy</title>
+    <link rel="stylesheet" href="css/style.css">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
+</head>
+<body>
+    <div class="dashboard">
+        <!-- Mobile Header -->
+        <div class="mobile-header">
+            <button class="burger-btn" id="burgerBtn">
+                <i class="fas fa-bars"></i>
+            </button>
+            <div class="mobile-logo">
+                <h2>GMDC BOTICA</h2>
+            </div>
+            <div class="mobile-notification">
+                <i class="fas fa-bell"></i>
+                <span class="badge">3</span>
+            </div>
+        </div>
+
+        <!-- Sidebar -->
+        <div class="sidebar" id="sidebar">
+            <div class="sidebar-header">
+                <h2>GMDC BOTICA</h2>
+                <p>Inventory System</p>
+            </div>
+            <div class="user-profile-sidebar">
+                <div class="user-avatar">
+                    <i class="fas fa-user-circle"></i>
+                </div>
+                <div class="user-info-sidebar">
+                    <div id="sidebarUserName">Loading...</div>
+                    <div id="sidebarUserEmail">Loading...</div>
+                </div>
+            </div>
+            <nav class="sidebar-nav">
+                <a href="dashboard.html" class="nav-item">
+                    <i class="fas fa-tachometer-alt"></i> <span>Dashboard</span>
+                </a>
+                <a href="inventory.html" class="nav-item">
+                    <i class="fas fa-pills"></i> <span>Inventory</span>
+                </a>
+                <a href="pos.html" class="nav-item active">
+                    <i class="fas fa-cash-register"></i> <span>Point of Sale</span>
+                </a>
+                <a href="sales.html" class="nav-item">
+                    <i class="fas fa-chart-line"></i> <span>Sales History</span>
+                </a>
+                <a href="reports.html" class="nav-item">
+                    <i class="fas fa-file-alt"></i> <span>Reports</span>
+                </a>
+            </nav>
+            <div class="sidebar-footer">
+                <button id="logout" class="logout-btn">
+                    <i class="fas fa-sign-out-alt"></i> <span>Logout</span>
+                </button>
+            </div>
+        </div>
+
+        <!-- Main Content -->
+        <div class="main-content">
+            <!-- Desktop Top Bar -->
+            <div class="desktop-top-bar">
+                <div class="top-bar-left">
+                    <div class="search-bar">
+                        <i class="fas fa-search"></i>
+                        <input type="text" placeholder="Search products...">
+                    </div>
+                </div>
+                <div class="top-bar-actions">
+                    <div class="notification">
+                        <i class="fas fa-bell"></i>
+                        <span class="badge">3</span>
+                    </div>
+                    <div class="date-time">
+                        <span id="currentDateTime"></span>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Mobile Search Bar -->
+            <div class="mobile-search-bar">
+                <i class="fas fa-search"></i>
+                <input type="text" placeholder="Search products...">
+            </div>
+
+            <!-- Welcome Message -->
+            <div class="welcome-message">
+                <h2>Welcome back, <span id="welcomeUserName">User</span>!</h2>
+                <p>Here's what's happening with your pharmacy today.</p>
+            </div>
+
+            <!-- POS Content -->
+            <div id="pos-tab" class="tab-content active">
+                <div class="pos-container">
+                    <!-- Products Grid -->
+                    <div class="products-section">
+                        <div class="pos-header">
+                            <h2>Products</h2>
+                            <div class="pos-controls">
+                                <div class="pos-search">
+                                    <i class="fas fa-search"></i>
+                                    <input type="text" id="posSearch" placeholder="Search products...">
+                                </div>
+                                <div class="pos-filter">
+                                    <select id="posCategoryFilter" class="category-filter">
+                                        <option value="">All Categories</option>
+                                        <option value="medicines">Medicines</option>
+                                        <option value="vitamins">Personal care</option>
+                                        <option value="equipment">Drinks</option>
+                                        <option value="personal-care">Personal Care</option>
+                                    </select>
+                                    <i class="fas fa-filter filter-icon"></i>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="products-grid" id="productsGrid"></div>
+                    </div>
+
+                    <!-- Cart Section -->
+                    <div class="cart-section">
+                        <div class="cart-header">
+                            <h2>Shopping Cart</h2>
+                            <button class="btn-exchange" id="exchangeButton">
+                                <i class="fas fa-exchange-alt"></i> Exchange Product
+                            </button>
+                        </div>
+                        
+                        <!-- Discount Info Display (will be populated by JS) -->
+                        <div id="discountInfo" class="discount-info-container"></div>
+                        
+                        <div class="cart-items" id="cartItems"></div>
+                        <div class="cart-summary">
+                            <div class="cart-total">
+                                <span>Subtotal:</span>
+                                <span id="subtotal">₱0.00</span>
+                            </div>
+                            <div class="cart-grand-total">
+                                <span>Total:</span>
+                                <span id="grandTotal">₱0.00</span>
+                            </div>
+                        </div>
+                        <div class="cart-actions">
+                            <button class="btn-secondary" id="clearCartBtn">
+                                <i class="fas fa-trash"></i> Clear
+                            </button>
+                            <button class="btn-primary" id="checkoutBtn">
+                                <i class="fas fa-shopping-cart"></i> Checkout
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Checkout Modal -->
+    <div id="checkoutModal" class="modal">
+        <div class="modal-content mobile-modal">
+            <div class="modal-header">
+                <h2>Checkout</h2>
+                <span class="close">&times;</span>
+            </div>
+            <div class="checkout-details">
+                <div class="checkout-summary">
+                    <h3>Order Summary</h3>
+                    <div id="checkoutItems"></div>
+                    <div class="checkout-total-row">
+                        <span>Subtotal:</span>
+                        <span id="checkoutSubtotal">₱0.00</span>
+                    </div>
+                    
+                    <!-- Discount Type Display -->
+                    <div class="checkout-discount-type">
+                        <span>Discount Type:</span>
+                        <span id="checkoutDiscountType"></span>
+                    </div>
+                    
+                    <div class="checkout-discount-row">
+                        <span>Discount:</span>
+                        <span id="checkoutDiscount">0%</span>
+                        <span id="checkoutDiscountAmount">-₱0.00</span>
+                    </div>
+                    <div class="checkout-total">
+                        <span>Total Amount:</span>
+                        <span id="checkoutTotal">₱0.00</span>
+                    </div>
+                </div>
+                <div class="payment-section">
+                    <h3>Payment</h3>
+                    
+                    <!-- Discount Options - Radio Buttons -->
+                    <div class="form-group">
+                        <label>Discount Type</label>
+                        <div class="discount-container" id="discountContainer">
+                            <!-- This will be populated by JavaScript -->
+                        </div>
+                    </div>
+                    
+                    <div class="form-group">
+                        <label>Payment Method</label>
+                        <select id="paymentMethod">
+                            <option value="cash">Cash</option>
+                            <option value="card">Credit/Debit Card</option>
+                            <option value="gcash">GCash</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label>Amount Tendered</label>
+                        <input type="number" id="amountTendered" step="0.01">
+                    </div>
+                    <div class="change-amount">
+                        <span>Change:</span>
+                        <span id="changeAmount">₱0.00</span>
+                    </div>
+                </div>
+                <button class="btn-primary mobile-btn" id="processPaymentBtn">Process Payment</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Exchange Modal -->
+    <div id="exchangeModal" class="modal">
+        <div class="modal-content mobile-modal">
+            <div class="modal-header">
+                <h2>Process Exchange</h2>
+                <span class="close">&times;</span>
+            </div>
+            <div class="exchange-details">
+                <div class="sale-info" id="exchangeSaleInfo">
+                    <h3>Select a sale from history</h3>
+                    <p class="policy-note"><i class="fas fa-clock"></i> Exchanges only allowed within 24 hours</p>
+                </div>
+                <div class="form-group">
+                    <label>Search Invoice or Product</label>
+                    <input type="text" id="exchangeSearch" placeholder="Type invoice # or product name...">
+                </div>
+                <div class="search-results" id="exchangeSearchResults"></div>
+                <div class="selected-exchange-info" id="selectedExchangeInfo" style="display: none;">
+                    <h4>Selected Item for Exchange</h4>
+                    <p><strong>Invoice:</strong> <span id="exchangeInvoice"></span></p>
+                    <p><strong>Product:</strong> <span id="exchangeProductName"></span></p>
+                    <p><strong>Price:</strong> ₱<span id="exchangePrice">0.00</span></p>
+                    <p><strong>Available Quantity:</strong> <span id="exchangeAvailableQty">0</span></p>
+                    
+                    <div class="form-group">
+                        <label>Exchange With</label>
+                        <select id="newProductSelect" class="form-control">
+                            <option value="">-- Select replacement product --</option>
+                        </select>
+                    </div>
+                    
+                    <div class="form-group">
+                        <label>Exchange Quantity</label>
+                        <input type="number" id="exchangeQuantity" min="1" value="1">
+                    </div>
+                    
+                    <div class="price-difference" id="priceDifference" style="display: none;">
+                        <p><strong>Price Difference:</strong> <span id="diffAmount">₱0.00</span></p>
+                        <p class="diff-note" id="diffNote"></p>
+                    </div>
+                    
+                    <div class="form-group">
+                        <label>Reason for Exchange</label>
+                        <select id="exchangeReason">
+                            <option value="defective">Defective Product</option>
+                            <option value="wrong_size">Wrong Size/Expiry</option>
+                            <option value="wrong_item">Wrong Item</option>
+                            <option value="customer_preference">Customer Preference</option>
+                            <option value="damaged">Damaged Product</option>
+                            <option value="other">Other</option>
+                        </select>
+                    </div>
+                    
+                    <button class="btn-primary" id="processExchangeBtn">Process Exchange</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script type="module" src="js/firebase-config.js"></script>
+    <script type="module" src="js/auth.js"></script>
+    <script type="module" src="js/pos.js"></script>
+</body>
+</html>

@@ -1,0 +1,398 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=yes">
+    <title>Sales History - GMDC Pharmacy</title>
+    <link rel="stylesheet" href="css/style.css">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.5.29/jspdf.plugin.autotable.min.js"></script>
+</head>
+<body>
+    <div class="dashboard">
+        <!-- Mobile Header -->
+        <div class="mobile-header">
+            <button class="burger-btn" id="burgerBtn">
+                <i class="fas fa-bars"></i>
+            </button>
+            <div class="mobile-logo">
+                <h2>GMDC BOTICA</h2>
+            </div>
+            <div class="mobile-notification">
+                <i class="fas fa-bell"></i>
+                <span class="badge">3</span>
+            </div>
+        </div>
+
+        <!-- Sidebar -->
+        <div class="sidebar" id="sidebar">
+            <div class="sidebar-header">
+                <h2>GMDC BOTICA</h2>
+                <p>Inventory System</p>
+            </div>
+            <div class="user-profile-sidebar">
+                <div class="user-avatar">
+                    <i class="fas fa-user-circle"></i>
+                </div>
+                <div class="user-info-sidebar">
+                    <div id="sidebarUserName">Loading...</div>
+                    <div id="sidebarUserEmail">Loading...</div>
+                </div>
+            </div>
+            <nav class="sidebar-nav">
+                <a href="dashboard.html" class="nav-item">
+                    <i class="fas fa-tachometer-alt"></i> <span>Dashboard</span>
+                </a>
+                <a href="inventory.html" class="nav-item">
+                    <i class="fas fa-pills"></i> <span>Inventory</span>
+                </a>
+                <a href="pos.html" class="nav-item">
+                    <i class="fas fa-cash-register"></i> <span>Point of Sale</span>
+                </a>
+                <a href="sales.html" class="nav-item active">
+                    <i class="fas fa-chart-line"></i> <span>Sales History</span>
+                </a>
+                <a href="reports.html" class="nav-item">
+                    <i class="fas fa-file-alt"></i> <span>Reports</span>
+                </a>
+            </nav>
+            <div class="sidebar-footer">
+                <button id="logout" class="logout-btn">
+                    <i class="fas fa-sign-out-alt"></i> <span>Logout</span>
+                </button>
+            </div>
+        </div>
+
+        <!-- Main Content -->
+        <div class="main-content">
+            <!-- Desktop Top Bar -->
+            <div class="desktop-top-bar">
+                <div class="top-bar-left">
+                    <div class="search-bar">
+                        <i class="fas fa-search"></i>
+                        <input type="text" placeholder="Search products...">
+                    </div>
+                </div>
+                <div class="top-bar-actions">
+                    <div class="notification">
+                        <i class="fas fa-bell"></i>
+                        <span class="badge">3</span>
+                    </div>
+                    <div class="date-time">
+                        <span id="currentDateTime"></span>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Mobile Search Bar -->
+            <div class="mobile-search-bar">
+                <i class="fas fa-search"></i>
+                <input type="text" placeholder="Search products...">
+            </div>
+
+            <!-- Welcome Message -->
+            <div class="welcome-message">
+                <h2>Welcome back, <span id="welcomeUserName">User</span>!</h2>
+                <p>Here's what's happening with your pharmacy today.</p>
+            </div>
+
+            <!-- Sales Content -->
+            <div id="sales-tab" class="tab-content active">
+                <h1 class="page-title">Sales History</h1>
+                <div class="sales-filters">
+                    <div class="filter-group mobile-stack">
+                        <input type="date" id="salesDateFilter" placeholder="Filter by date">
+                        <button class="sort-btn" id="sortSalesBtn">
+                            <i class="fas fa-sort-amount-down"></i> <span class="btn-text">Sort</span>
+                        </button>
+                    </div>
+                    <button class="btn-primary" id="downloadPDFBtn">
+                        <i class="fas fa-file-pdf"></i> <span class="btn-text">Download PDF</span>
+                    </button>
+                </div>
+                <div class="table-container horizontal-scroll">
+                    <table class="sales-table">
+                        <thead>
+                            <tr>
+                                <th>Invoice #</th>
+                                <th>Date</th>
+                                <th>Items</th>
+                                <th>Total</th>
+                                <th>Payment</th>
+                                <th>Cashier</th>
+                                <th>Actions</th>
+                            </tr>
+                        </thead>
+                        <tbody id="salesTableBody"></tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Sale Details Modal -->
+    <div id="saleDetailsModal" class="modal">
+        <div class="modal-content sale-panel">
+            <div class="sale-panel-header">
+                <h2><i class="fas fa-receipt"></i> Sale Details</h2>
+                <span class="close" onclick="closeModal('saleDetailsModal')">&times;</span>
+            </div>
+            <div class="sale-panel-body" id="salePanelBody"></div>
+        </div>
+    </div>
+
+    <!-- Exchange Modal -->
+    <div id="exchangeModal" class="modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h2><i class="fas fa-exchange-alt"></i> Process Exchange</h2>
+                <span class="close" onclick="closeModal('exchangeModal')">&times;</span>
+            </div>
+            <div class="exchange-details">
+                <!-- Sale Info -->
+                <div class="sale-info" id="exchangeSaleInfo">
+                    <h3>Select a sale from history</h3>
+                    <p class="policy-note"><i class="fas fa-clock"></i> Exchanges only allowed within 24 hours of purchase</p>
+                </div>
+                
+                <!-- Search Section -->
+                <div class="form-group">
+                    <label><i class="fas fa-search"></i> Search Invoice or Product</label>
+                    <input type="text" id="exchangeSearch" class="form-control" placeholder="Type invoice # or product name..." autocomplete="off">
+                    <small class="form-text">Enter at least 2 characters to search</small>
+                </div>
+                
+                <!-- Search Results -->
+                <div class="search-results" id="exchangeSearchResults"></div>
+                
+                <!-- Selected Exchange Info -->
+                <div class="selected-exchange-info" id="selectedExchangeInfo" style="display: none;">
+                    <h4><i class="fas fa-check-circle"></i> Selected Item for Exchange</h4>
+                    
+                    <div class="exchange-item-details">
+                        <p><strong>Invoice:</strong> <span id="exchangeInvoice"></span></p>
+                        <p><strong>Product:</strong> <span id="exchangeProductName"></span></p>
+                        <p><strong>Price:</strong> ₱<span id="exchangePrice">0.00</span></p>
+                        <p><strong>Available Quantity:</strong> <span id="exchangeAvailableQty">0</span></p>
+                    </div>
+                    
+                    <div class="form-group">
+                        <label><i class="fas fa-box"></i> Exchange With</label>
+                        <select id="newProductSelect" class="form-control">
+                            <option value="">-- Select replacement product --</option>
+                        </select>
+                    </div>
+                    
+                    <div class="form-group">
+                        <label><i class="fas fa-sort-numeric-up"></i> Exchange Quantity</label>
+                        <input type="number" id="exchangeQuantity" class="form-control" min="1" value="1">
+                    </div>
+                    
+                    <div class="price-difference" id="priceDifference" style="display: none;">
+                        <h5>Price Difference</h5>
+                        <p><strong>Amount:</strong> <span id="diffAmount">₱0.00</span></p>
+                        <p class="diff-note" id="diffNote"></p>
+                    </div>
+                    
+                    <div class="form-group">
+                        <label><i class="fas fa-comment"></i> Reason for Exchange</label>
+                        <select id="exchangeReason" class="form-control">
+                            <option value="defective">Defective Product</option>
+                            <option value="wrong_size">Wrong Size/Expiry</option>
+                            <option value="wrong_item">Wrong Item</option>
+                            <option value="customer_preference">Customer Preference</option>
+                            <option value="damaged">Damaged Product</option>
+                            <option value="other">Other</option>
+                        </select>
+                    </div>
+                    
+                    <div class="form-group">
+                        <label><i class="fas fa-sticky-note"></i> Additional Notes (Optional)</label>
+                        <textarea id="exchangeNotes" class="form-control" rows="2" placeholder="Enter any additional notes..."></textarea>
+                    </div>
+                    
+                    <button class="btn-primary" id="processExchangeBtn" style="width: 100%; margin-top: 15px;">
+                        <i class="fas fa-check-circle"></i> Process Exchange
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Add these additional styles to ensure exchange modal displays properly -->
+    <style>
+        /* Exchange Modal Additional Styles */
+        #exchangeModal .modal-content {
+            max-width: 600px;
+            background: white;
+            border-radius: 15px;
+            padding: 25px;
+            max-height: 90vh;
+            overflow-y: auto;
+        }
+        
+        .exchange-details {
+            padding: 10px 0;
+        }
+        
+        .sale-info {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 20px;
+            border-radius: 10px;
+            margin-bottom: 20px;
+        }
+        
+        .sale-info h3 {
+            margin: 0 0 10px 0;
+            font-size: 18px;
+            color: white;
+        }
+        
+        .search-results {
+            max-height: 200px;
+            overflow-y: auto;
+            border: 1px solid #e0e0e0;
+            border-radius: 8px;
+            margin: 10px 0;
+            padding: 10px;
+        }
+        
+        .search-result-item {
+            padding: 12px;
+            border-bottom: 1px solid #f0f0f0;
+            cursor: pointer;
+            transition: background 0.2s;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        
+        .search-result-item:hover {
+            background: #f8f9fa;
+        }
+        
+        .search-result-item:last-child {
+            border-bottom: none;
+        }
+        
+        .product-name {
+            font-weight: 600;
+            color: #333;
+        }
+        
+        .product-details {
+            font-size: 12px;
+            color: #666;
+            margin-top: 3px;
+        }
+        
+        .selected-exchange-info {
+            margin-top: 20px;
+            padding: 20px;
+            background: #f8f9fa;
+            border-radius: 10px;
+        }
+        
+        .selected-exchange-info h4 {
+            margin: 0 0 15px 0;
+            color: #333;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        
+        .selected-exchange-info h4 i {
+            color: #27ae60;
+        }
+        
+        .exchange-item-details {
+            background: white;
+            padding: 15px;
+            border-radius: 8px;
+            margin-bottom: 15px;
+        }
+        
+        .exchange-item-details p {
+            margin: 8px 0;
+            display: flex;
+            justify-content: space-between;
+        }
+        
+        .price-difference {
+            background: white;
+            padding: 15px;
+            border-radius: 8px;
+            margin: 15px 0;
+            border-left: 3px solid #3498db;
+        }
+        
+        .price-difference h5 {
+            margin: 0 0 10px 0;
+            color: #333;
+            font-size: 14px;
+        }
+        
+        .price-difference p {
+            margin: 5px 0;
+        }
+        
+        #diffAmount {
+            font-size: 18px;
+            font-weight: bold;
+        }
+        
+        .diff-note {
+            font-size: 12px;
+            color: #7f8c8d;
+            font-style: italic;
+        }
+        
+        .form-text {
+            font-size: 12px;
+            color: #7f8c8d;
+            margin-top: 5px;
+            display: block;
+        }
+        
+        .select-sale {
+            color: #27ae60 !important;
+            background: none !important;
+            border: none !important;
+            font-size: 24px !important;
+            cursor: pointer !important;
+            padding: 5px !important;
+        }
+        
+        .select-sale:hover {
+            color: #219a52 !important;
+            transform: scale(1.1) !important;
+        }
+        
+        @media (max-width: 768px) {
+            #exchangeModal .modal-content {
+                margin: 10px;
+                padding: 15px;
+                max-height: 80vh;
+            }
+            
+            .search-result-item {
+                flex-direction: column;
+                align-items: flex-start;
+                gap: 5px;
+            }
+            
+            .exchange-item-details p {
+                flex-direction: column;
+                gap: 5px;
+            }
+        }
+    </style>
+
+    <script type="module" src="js/firebase-config.js"></script>
+    <script type="module" src="js/auth.js"></script>
+    <script type="module" src="js/sales.js"></script>
+</body>
+</html>

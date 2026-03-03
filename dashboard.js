@@ -14,7 +14,8 @@ import {
     deleteDoc,
     onSnapshot,
     Timestamp,
-    limit
+    limit,
+    writeBatch
 } from "https://www.gstatic.com/firebasejs/10.11.1/firebase-firestore.js";
 
 const firebaseConfig = {
@@ -42,15 +43,47 @@ if (!loggedInUserId) {
 let cart = [];
 let products = [];
 let filteredProducts = [];
-let unsubscribeProducts = null; // For real-time listener
-let currentUserData = null; // Store user data globally
-let currentSortOrder = 'desc'; // 'desc' for newest first, 'asc' for oldest first
-let reportChart = null; // For chart instance
-let currentDiscount = 0; // 0 = no discount, 20 = senior/PWD discount
+let unsubscribeProducts = null;
+let currentUserData = null;
+let currentSortOrder = 'desc';
+let reportChart = null;
+let currentDiscount = 0;
+let selectedProductForStock = null;
+
+// ===== CONSTANTS FOR EXCHANGE POLICY =====
+const EXCHANGE_WINDOW_HOURS = 24;
+const MS_PER_HOUR = 60 * 60 * 1000;
 
 // ===== FLAGS TO PREVENT DOUBLE PROCESSING =====
-let isProcessingPayment = false; // Flag to prevent double payment processing
-let isProcessingReturn = false; // Flag to prevent double return processing
+let isProcessingPayment = false;
+let isProcessingExchange = false;
+
+// ===== EXCHANGE POLICY FUNCTIONS =====
+function isWithinExchangeWindow(saleDate) {
+    if (!saleDate) return false;
+    
+    const saleTimestamp = saleDate.toDate ? saleDate.toDate() : new Date(saleDate);
+    const now = new Date();
+    const hoursDiff = (now - saleTimestamp) / MS_PER_HOUR;
+    
+    return hoursDiff <= EXCHANGE_WINDOW_HOURS;
+}
+
+function getTimeRemaining(saleDate) {
+    if (!saleDate) return "Expired";
+    
+    const saleTimestamp = saleDate.toDate ? saleDate.toDate() : new Date(saleDate);
+    const now = new Date();
+    const hoursDiff = (now - saleTimestamp) / MS_PER_HOUR;
+    const hoursRemaining = EXCHANGE_WINDOW_HOURS - hoursDiff;
+    
+    if (hoursRemaining <= 0) return "Expired";
+    if (hoursRemaining < 1) {
+        const minutes = Math.floor(hoursRemaining * 60);
+        return `${minutes} minute${minutes > 1 ? 's' : ''} remaining`;
+    }
+    return `${Math.floor(hoursRemaining)} hour${Math.floor(hoursRemaining) > 1 ? 's' : ''} remaining`;
+}
 
 // Fetch and display user data
 async function fetchUserData(userId) {
@@ -61,11 +94,8 @@ async function fetchUserData(userId) {
         if (docSnap.exists()) {
             currentUserData = docSnap.data();
             const fullName = `${currentUserData.firstName || ''} ${currentUserData.lastName || ''}`.trim();
-            
-            // Update all user name elements
             updateUserDisplay(fullName, currentUserData.email);
         } else {
-            // If user data doesn't exist, use email from auth
             const user = auth.currentUser;
             if (user) {
                 updateUserDisplay(user.email?.split('@')[0] || 'User', user.email);
@@ -73,7 +103,6 @@ async function fetchUserData(userId) {
         }
     } catch (error) {
         console.error("Error fetching user data:", error);
-        // Fallback to auth user
         const user = auth.currentUser;
         if (user) {
             updateUserDisplay(user.email?.split('@')[0] || 'User', user.email);
@@ -81,9 +110,7 @@ async function fetchUserData(userId) {
     }
 }
 
-// Update user display in all places
 function updateUserDisplay(fullName, email) {
-    // Update dashboard elements if they exist
     const fNameElement = document.getElementById('loggedUserFName');
     const lNameElement = document.getElementById('loggedUserLName');
     const emailElement = document.getElementById('loggedUserEmail');
@@ -92,7 +119,6 @@ function updateUserDisplay(fullName, email) {
     const welcomeNameElement = document.getElementById('welcomeUserName');
     const userAvatarElement = document.querySelector('.user-avatar i');
     
-    // Split full name into first and last if needed
     const nameParts = fullName.split(' ');
     const firstName = nameParts[0] || 'User';
     const lastName = nameParts.slice(1).join(' ') || '';
@@ -101,7 +127,6 @@ function updateUserDisplay(fullName, email) {
     if (lNameElement) lNameElement.textContent = lastName || 'N/A';
     if (emailElement) emailElement.textContent = email || 'N/A';
     
-    // Update sidebar info
     if (sidebarNameElement) {
         sidebarNameElement.textContent = fullName || 'User';
     }
@@ -109,12 +134,10 @@ function updateUserDisplay(fullName, email) {
         sidebarEmailElement.textContent = email || '';
     }
     
-    // Update welcome message
     if (welcomeNameElement) {
         welcomeNameElement.textContent = firstName || 'User';
     }
     
-    // Update avatar with user initial
     if (userAvatarElement) {
         const initial = (firstName.charAt(0) || 'U').toUpperCase();
         userAvatarElement.style.display = 'none';
@@ -128,10 +151,8 @@ function updateUserDisplay(fullName, email) {
     }
 }
 
-// Load user data
 fetchUserData(loggedInUserId);
 
-// Update date and time
 function updateDateTime() {
     const dateTimeElement = document.getElementById('currentDateTime');
     if (dateTimeElement) {
@@ -151,13 +172,11 @@ function updateDateTime() {
 setInterval(updateDateTime, 1000);
 updateDateTime();
 
-// Check if day has changed for sales reset
 function checkDayChange() {
     const lastVisit = localStorage.getItem('lastVisitDate');
     const today = new Date().toDateString();
     
     if (lastVisit !== today) {
-        // Day has changed, reset today's sales display
         const todaySalesEl = document.getElementById('todaySales');
         if (todaySalesEl) {
             todaySalesEl.textContent = '₱0.00';
@@ -166,28 +185,21 @@ function checkDayChange() {
     }
 }
 
-// Call on load
 checkDayChange();
-
-// Check every minute for day change
 setInterval(checkDayChange, 60000);
 
-// Burger button functionality for sidebar toggle
+// Burger button functionality
 const burgerBtn = document.getElementById('burgerBtn');
 const sidebar = document.querySelector('.sidebar');
-const mainContent = document.querySelector('.main-content');
 
 if (burgerBtn) {
     burgerBtn.addEventListener('click', () => {
         sidebar.classList.toggle('active');
         
-        // Change icon based on sidebar state
         const icon = burgerBtn.querySelector('i');
         if (sidebar.classList.contains('active')) {
             icon.classList.remove('fa-bars');
             icon.classList.add('fa-times');
-            
-            // Add overlay for mobile
             if (window.innerWidth <= 768) {
                 createSidebarOverlay();
             }
@@ -199,7 +211,6 @@ if (burgerBtn) {
     });
 }
 
-// Create overlay for mobile
 function createSidebarOverlay() {
     if (!document.querySelector('.sidebar-overlay')) {
         const overlay = document.createElement('div');
@@ -223,7 +234,6 @@ function removeSidebarOverlay() {
     }
 }
 
-// Close sidebar when clicking on nav items (mobile)
 document.querySelectorAll('.nav-item').forEach(item => {
     item.addEventListener('click', () => {
         if (window.innerWidth <= 768) {
@@ -238,10 +248,8 @@ document.querySelectorAll('.nav-item').forEach(item => {
     });
 });
 
-// Handle window resize
 window.addEventListener('resize', () => {
     if (window.innerWidth > 768) {
-        // On desktop, remove overlay and reset sidebar
         removeSidebarOverlay();
         sidebar.classList.remove('active');
         const icon = burgerBtn?.querySelector('i');
@@ -258,18 +266,15 @@ document.querySelectorAll('.nav-item').forEach(item => {
         e.preventDefault();
         const tabId = item.getAttribute('data-tab');
         
-        // Update active nav item
         document.querySelectorAll('.nav-item').forEach(nav => nav.classList.remove('active'));
         item.classList.add('active');
         
-        // Show selected tab
         document.querySelectorAll('.tab-content').forEach(tab => tab.classList.remove('active'));
         const selectedTab = document.getElementById(`${tabId}-tab`);
         if (selectedTab) {
             selectedTab.classList.add('active');
         }
         
-        // Load tab-specific data
         if (tabId === 'inventory') {
             loadInventory();
         }
@@ -300,8 +305,7 @@ document.querySelectorAll('.nav-item').forEach(item => {
     });
 });
 
-// ===== UTILITY FUNCTIONS =====
-// Debounce function to limit search calls
+// Utility Functions
 function debounce(func, wait) {
     let timeout;
     return function executedFunction(...args) {
@@ -314,7 +318,6 @@ function debounce(func, wait) {
     };
 }
 
-// Throttle function to limit execution rate
 function throttle(func, limit) {
     let inThrottle;
     return function(...args) {
@@ -326,16 +329,21 @@ function throttle(func, limit) {
     };
 }
 
-// Search functionality for POS
+// Search functionality
 const posSearch = document.getElementById('posSearch');
 if (posSearch) {
-    posSearch.addEventListener('input', debounce((e) => {
-        const searchTerm = e.target.value.toLowerCase().trim();
-        filterProducts(searchTerm);
+    posSearch.addEventListener('input', debounce(() => {
+        filterPOSProducts();
     }, 300));
 }
 
-// Search functionality for Inventory
+const posCategoryFilter = document.getElementById('posCategoryFilter');
+if (posCategoryFilter) {
+    posCategoryFilter.addEventListener('change', () => {
+        filterPOSProducts();
+    });
+}
+
 const inventorySearch = document.getElementById('inventorySearch');
 if (inventorySearch) {
     inventorySearch.addEventListener('input', debounce((e) => {
@@ -344,7 +352,93 @@ if (inventorySearch) {
     }, 300));
 }
 
-// Filter products in POS
+// Filter POS Products
+function filterPOSProducts() {
+    const searchTerm = document.getElementById('posSearch')?.value.toLowerCase().trim() || '';
+    const categoryFilter = document.getElementById('posCategoryFilter')?.value || '';
+    
+    const productsGrid = document.getElementById('productsGrid');
+    if (!productsGrid) return;
+    
+    let filteredProducts = products;
+    let filterCount = 0;
+    
+    // Apply category filter
+    if (categoryFilter) {
+        filteredProducts = filteredProducts.filter(p => 
+            p.category?.toLowerCase() === categoryFilter.toLowerCase()
+        );
+        filterCount++;
+    }
+    
+    // Apply search filter
+    if (searchTerm) {
+        filteredProducts = filteredProducts.filter(p => 
+            p.name?.toLowerCase().includes(searchTerm) || 
+            p.code?.toLowerCase().includes(searchTerm)
+        );
+        filterCount++;
+    }
+    
+    // Update the filter icon class
+    const categorySelect = document.getElementById('posCategoryFilter');
+    if (categorySelect) {
+        if (categoryFilter) {
+            categorySelect.classList.add('has-value');
+        } else {
+            categorySelect.classList.remove('has-value');
+        }
+    }
+    
+    // Show filter summary
+    const filterSummary = document.getElementById('filterSummary') || createFilterSummary();
+    if (filterCount > 0) {
+        filterSummary.innerHTML = `
+            <i class="fas fa-filter"></i> 
+            Showing ${filteredProducts.length} of ${products.length} products
+            ${categoryFilter ? `• Category: ${categorySelect.options[categorySelect.selectedIndex]?.text.split('(')[0].trim() || ''}` : ''}
+            ${searchTerm ? `• Search: "${searchTerm}"` : ''}
+            <button class="clear-filters-btn" onclick="clearPOSFilters()">
+                <i class="fas fa-times"></i> Clear
+            </button>
+        `;
+        filterSummary.style.display = 'flex';
+    } else {
+        filterSummary.style.display = 'none';
+    }
+    
+    displayProducts(filteredProducts);
+}
+
+// Create filter summary element
+function createFilterSummary() {
+    const summary = document.createElement('div');
+    summary.id = 'filterSummary';
+    summary.className = 'filter-summary';
+    const posHeader = document.querySelector('.pos-header');
+    if (posHeader) {
+        posHeader.appendChild(summary);
+    }
+    return summary;
+}
+
+// Clear all filters
+function clearPOSFilters() {
+    const searchInput = document.getElementById('posSearch');
+    const categorySelect = document.getElementById('posCategoryFilter');
+    
+    if (searchInput) searchInput.value = '';
+    if (categorySelect) {
+        categorySelect.value = '';
+        categorySelect.classList.remove('has-value');
+    }
+    
+    filterPOSProducts();
+}
+
+// Make clearPOSFilters globally available
+window.clearPOSFilters = clearPOSFilters;
+
 function filterProducts(searchTerm) {
     const productsGrid = document.getElementById('productsGrid');
     if (!productsGrid) return;
@@ -365,10 +459,17 @@ function filterProducts(searchTerm) {
     
     productsToShow.forEach(product => {
         const isOutOfStock = product.stock <= 0;
+        const discountStatus = product.discountable === false ? 'non-discountable' : '';
         
         const productCard = document.createElement('div');
-        productCard.className = `product-card ${isOutOfStock ? 'out-of-stock' : ''}`;
+        productCard.className = `product-card ${isOutOfStock ? 'out-of-stock' : ''} ${discountStatus}`;
         productCard.dataset.productId = product.id;
+        
+        let discountBadge = '';
+        if (product.discountable === false) {
+            discountBadge = '<span class="non-discount-badge"><i class="fas fa-ban"></i> No Discount</span>';
+        }
+        
         productCard.innerHTML = `
             <div class="product-image">
                 <i class="fas fa-pills"></i>
@@ -376,6 +477,7 @@ function filterProducts(searchTerm) {
             <h4>${product.name || 'Unnamed'}</h4>
             <p class="product-price">₱${(product.price || 0).toFixed(2)}</p>
             <p class="product-stock ${isOutOfStock ? 'text-danger' : ''}">Stock: ${product.stock || 0}</p>
+            ${discountBadge}
             ${isOutOfStock ? '<span class="out-of-stock-label">OUT OF STOCK</span>' : ''}
             <button class="add-to-cart" ${isOutOfStock ? 'disabled' : ''} 
                     data-id="${product.id}">
@@ -385,13 +487,11 @@ function filterProducts(searchTerm) {
         productsGrid.appendChild(productCard);
     });
     
-    // Add event listeners to add-to-cart buttons
     document.querySelectorAll('.add-to-cart:not([disabled])').forEach(btn => {
         btn.addEventListener('click', () => addToCart(btn.dataset.id));
     });
 }
 
-// Filter inventory with category and stock filters
 function filterInventory(searchTerm) {
     const categoryFilter = document.getElementById('categoryFilter')?.value || '';
     const stockFilter = document.getElementById('stockFilter')?.value || '';
@@ -400,7 +500,6 @@ function filterInventory(searchTerm) {
     rows.forEach(row => {
         let showRow = true;
         
-        // Text search filter
         if (searchTerm) {
             const text = row.textContent.toLowerCase();
             if (!text.includes(searchTerm.toLowerCase())) {
@@ -408,7 +507,6 @@ function filterInventory(searchTerm) {
             }
         }
         
-        // Category filter
         if (showRow && categoryFilter) {
             const category = row.querySelector('td:nth-child(3)')?.textContent || '';
             if (category.toLowerCase() !== categoryFilter.toLowerCase()) {
@@ -416,7 +514,6 @@ function filterInventory(searchTerm) {
             }
         }
         
-        // Stock filter
         if (showRow && stockFilter) {
             const stockText = row.querySelector('td:nth-child(5)')?.textContent || '';
             const stockValue = parseInt(stockText) || 0;
@@ -432,15 +529,12 @@ function filterInventory(searchTerm) {
     });
 }
 
-// Load Dashboard Stats
 async function loadDashboardStats() {
     try {
-        // Get total products
         const productsSnapshot = await getDocs(collection(db, "products"));
         const totalProductsEl = document.getElementById('totalProducts');
         if (totalProductsEl) totalProductsEl.textContent = productsSnapshot.size;
         
-        // Get low stock count (stock < 10)
         let lowStock = 0;
         productsSnapshot.forEach(doc => {
             const stock = doc.data().stock;
@@ -450,75 +544,68 @@ async function loadDashboardStats() {
         const lowStockEl = document.getElementById('lowStockCount');
         if (lowStockEl) lowStockEl.textContent = lowStock;
         
-        // Get today's sales (automatically resets each day)
         const today = new Date();
         today.setHours(0, 0, 0, 0);
+        const tomorrow = new Date(today);
+        tomorrow.setDate(tomorrow.getDate() + 1);
+        
         const salesQuery = query(
             collection(db, "sales"),
-            where("date", ">=", Timestamp.fromDate(today))
+            where("date", ">=", Timestamp.fromDate(today)),
+            where("date", "<", Timestamp.fromDate(tomorrow))
         );
         const salesSnapshot = await getDocs(salesQuery);
-        let todayTotal = 0;
-        salesSnapshot.forEach(doc => {
-            todayTotal += doc.data().total || 0;
-        });
-        const todaySalesEl = document.getElementById('todaySales');
-        if (todaySalesEl) todaySalesEl.textContent = `₱${todayTotal.toFixed(2)}`;
         
-        // Get expiring soon count (within 30 days)
+        const exchangesQuery = query(
+            collection(db, "exchanges"),
+            where("date", ">=", Timestamp.fromDate(today)),
+            where("date", "<", Timestamp.fromDate(tomorrow))
+        );
+        const exchangesSnapshot = await getDocs(exchangesQuery);
+        
+        let totalSales = 0;
+        
+        salesSnapshot.forEach(doc => {
+            totalSales += doc.data().total || 0;
+        });
+        
+        exchangesSnapshot.forEach(doc => {
+            const exchange = doc.data();
+            totalSales += exchange.priceDifference || 0;
+        });
+        
+        const todaySalesEl = document.getElementById('todaySales');
+        if (todaySalesEl) todaySalesEl.textContent = `₱${totalSales.toFixed(2)}`;
+        
         const thirtyDaysFromNow = new Date();
         thirtyDaysFromNow.setDate(thirtyDaysFromNow.getDate() + 30);
+        
+        // Get expiring count from batches
+        const batchesSnapshot = await getDocs(collection(db, "batches"));
         let expiringCount = 0;
-        productsSnapshot.forEach(doc => {
-            const product = doc.data();
-            if (product.expiryDate) {
-                const expiryDate = product.expiryDate.toDate();
-                if (expiryDate <= thirtyDaysFromNow) expiringCount++;
+        batchesSnapshot.forEach(doc => {
+            const batch = doc.data();
+            if (batch.expiryDate && batch.quantity > 0) {
+                const expiryDate = batch.expiryDate.toDate();
+                expiryDate.setHours(0, 0, 0, 0);
+                if (expiryDate <= thirtyDaysFromNow) {
+                    expiringCount++;
+                }
             }
         });
+        
         const expiringEl = document.getElementById('expiringCount');
         if (expiringEl) expiringEl.textContent = expiringCount;
         
-        // Get return count for today
-        const returnQuery = query(
-            collection(db, "returns"),
-            where("date", ">=", Timestamp.fromDate(today))
-        );
-        const returnSnapshot = await getDocs(returnQuery);
-        const returnCount = returnSnapshot.size;
-        
-        // Make stat cards clickable
         const statCards = document.querySelectorAll('.stat-card');
         if (statCards.length >= 4) {
-            // Low Stock card (second card)
             statCards[1].style.cursor = 'pointer';
             statCards[1].onclick = () => openLowStockModal();
             
-            // Today's Sales card (third card)
             statCards[2].style.cursor = 'pointer';
             statCards[2].onclick = () => openTodaySalesModal();
-            
-            // Add hover effect
-            statCards[1].addEventListener('mouseenter', function() {
-                this.style.transform = 'translateY(-5px)';
-                this.style.boxShadow = '0 8px 20px rgba(0,0,0,0.15)';
-            });
-            statCards[1].addEventListener('mouseleave', function() {
-                this.style.transform = '';
-                this.style.boxShadow = '';
-            });
-            
-            statCards[2].addEventListener('mouseenter', function() {
-                this.style.transform = 'translateY(-5px)';
-                this.style.boxShadow = '0 8px 20px rgba(0,0,0,0.15)';
-            });
-            statCards[2].addEventListener('mouseleave', function() {
-                this.style.transform = '';
-                this.style.boxShadow = '';
-            });
         }
         
-        // Load recent activities
         await loadRecentActivities();
         
     } catch (error) {
@@ -526,7 +613,6 @@ async function loadDashboardStats() {
     }
 }
 
-// Load Recent Activities
 async function loadRecentActivities() {
     try {
         const activitiesList = document.getElementById('recentActivities');
@@ -534,7 +620,6 @@ async function loadRecentActivities() {
         
         activitiesList.innerHTML = '<div class="loading">Loading activities...</div>';
         
-        // Get recent sales (last 5)
         const salesQuery = query(
             collection(db, "sales"),
             orderBy("date", "desc"),
@@ -542,15 +627,13 @@ async function loadRecentActivities() {
         );
         const salesSnapshot = await getDocs(salesQuery);
         
-        // Get recent returns (last 5)
-        const returnsQuery = query(
-            collection(db, "returns"),
+        const exchangesQuery = query(
+            collection(db, "exchanges"),
             orderBy("date", "desc"),
             limit(5)
         );
-        const returnsSnapshot = await getDocs(returnsQuery);
+        const exchangesSnapshot = await getDocs(exchangesQuery);
         
-        // Get recent product updates (last 5)
         const productsQuery = query(
             collection(db, "products"),
             orderBy("lastUpdated", "desc"),
@@ -558,7 +641,6 @@ async function loadRecentActivities() {
         );
         const productsSnapshot = await getDocs(productsQuery);
         
-        // Get recent stock changes from activities collection
         const activitiesQuery = query(
             collection(db, "activities"),
             orderBy("timestamp", "desc"),
@@ -568,7 +650,6 @@ async function loadRecentActivities() {
         
         let activities = [];
         
-        // Add sales activities
         salesSnapshot.forEach(doc => {
             const sale = doc.data();
             activities.push({
@@ -579,18 +660,22 @@ async function loadRecentActivities() {
             });
         });
         
-        // Add return activities
-        returnsSnapshot.forEach(doc => {
-            const returnData = doc.data();
+        exchangesSnapshot.forEach(doc => {
+            const exchange = doc.data();
+            const diffText = exchange.priceDifference > 0 ? 
+                `+₱${exchange.priceDifference.toFixed(2)}` : 
+                exchange.priceDifference < 0 ? 
+                `-₱${Math.abs(exchange.priceDifference).toFixed(2)}` : 
+                '₱0.00';
+            
             activities.push({
-                type: 'return',
-                description: `Return: ${returnData.productName} x${returnData.quantity} - ₱${(returnData.amount || 0).toFixed(2)} refunded (${returnData.returnId})`,
-                timestamp: returnData.date,
-                icon: 'fa-undo'
+                type: 'exchange',
+                description: `Exchange: ${exchange.originalProduct} → ${exchange.newProduct} x${exchange.quantity} (${diffText})`,
+                timestamp: exchange.date,
+                icon: 'fa-exchange-alt'
             });
         });
         
-        // Add product activities from products collection
         productsSnapshot.forEach(doc => {
             const product = doc.data();
             if (product.createdAt && product.createdAt.toDate() > new Date(Date.now() - 7 * 24 * 60 * 60 * 1000)) {
@@ -603,7 +688,6 @@ async function loadRecentActivities() {
             }
         });
         
-        // Add activities from activities collection
         activitiesSnapshot.forEach(doc => {
             const activity = doc.data();
             activities.push({
@@ -614,7 +698,6 @@ async function loadRecentActivities() {
             });
         });
         
-        // Sort by timestamp (newest first) and take top 10
         activities.sort((a, b) => {
             const timeA = a.timestamp?.toDate?.() || new Date(a.timestamp);
             const timeB = b.timestamp?.toDate?.() || new Date(b.timestamp);
@@ -656,7 +739,6 @@ async function loadRecentActivities() {
     }
 }
 
-// Helper function to get time ago string
 function getTimeAgo(timestamp) {
     const now = new Date();
     const diffMs = now - timestamp;
@@ -680,7 +762,7 @@ function getTimeAgo(timestamp) {
 function getActivityIcon(type) {
     const icons = {
         'sale': 'fa-shopping-cart',
-        'return': 'fa-undo',
+        'exchange': 'fa-exchange-alt',
         'stock': 'fa-boxes',
         'product': 'fa-pills',
         'user': 'fa-user',
@@ -691,7 +773,6 @@ function getActivityIcon(type) {
 
 // ========== DASHBOARD MODAL FUNCTIONS ==========
 
-// Open Low Stock Modal
 async function openLowStockModal() {
     try {
         const modal = document.getElementById('lowStockModal');
@@ -702,7 +783,6 @@ async function openLowStockModal() {
             return;
         }
         
-        // Show loading
         modalBody.innerHTML = `
             <div class="modal-loading">
                 <i class="fas fa-spinner fa-spin"></i>
@@ -711,7 +791,6 @@ async function openLowStockModal() {
         `;
         modal.style.display = 'block';
         
-        // Get all products with low stock (stock > 0 and stock < 10)
         const productsSnapshot = await getDocs(collection(db, "products"));
         const lowStockProducts = [];
         
@@ -725,7 +804,6 @@ async function openLowStockModal() {
             }
         });
         
-        // Sort by stock (lowest first)
         lowStockProducts.sort((a, b) => a.stock - b.stock);
         
         if (lowStockProducts.length === 0) {
@@ -739,7 +817,6 @@ async function openLowStockModal() {
             return;
         }
         
-        // Build the modal content
         let html = `
             <div class="modal-stats-summary">
                 <div class="modal-stat">
@@ -756,7 +833,8 @@ async function openLowStockModal() {
         
         lowStockProducts.forEach(product => {
             const stockClass = product.stock < 5 ? 'critical-stock' : 'warning-stock';
-            const expiryClass = product.expiryDate ? (new Date(product.expiryDate.toDate()) < new Date() ? 'expired' : '') : '';
+            const discountStatus = product.discountable === false ? 
+                '<span class="non-discount-badge-small"><i class="fas fa-ban"></i> No Discount</span>' : '';
             
             html += `
                 <div class="modal-item">
@@ -764,11 +842,11 @@ async function openLowStockModal() {
                         <div class="modal-item-name">
                             <strong>${product.name || 'Unnamed'}</strong>
                             ${product.code ? `<span class="item-code">${product.code}</span>` : ''}
+                            ${discountStatus}
                         </div>
                         <div class="modal-item-details">
                             <span class="item-category"><i class="fas fa-tag"></i> ${product.category || 'N/A'}</span>
                             <span class="item-price"><i class="fas fa-dollar-sign"></i> ₱${(product.price || 0).toFixed(2)}</span>
-                            <span class="item-expiry ${expiryClass}"><i class="fas fa-calendar-alt"></i> ${product.expiryDate ? formatDate(product.expiryDate) : 'No expiry'}</span>
                         </div>
                     </div>
                     <div class="modal-item-stock ${stockClass}">
@@ -784,7 +862,7 @@ async function openLowStockModal() {
         html += `
             </div>
             <div class="modal-footer">
-                <button class="btn-primary" onclick="window.location.href='#'; document.querySelector('[data-tab=\"inventory\"]').click();">
+                <button class="btn-primary" onclick="document.querySelector('[data-tab=\"inventory\"]').click(); closeModal('lowStockModal');">
                     <i class="fas fa-pills"></i> Go to Inventory
                 </button>
             </div>
@@ -807,7 +885,6 @@ async function openLowStockModal() {
     }
 }
 
-// Open Today's Sales Modal with Refund Option
 async function openTodaySalesModal() {
     try {
         const modal = document.getElementById('todaySalesModal');
@@ -818,7 +895,6 @@ async function openTodaySalesModal() {
             return;
         }
         
-        // Show loading
         modalBody.innerHTML = `
             <div class="modal-loading">
                 <i class="fas fa-spinner fa-spin"></i>
@@ -827,7 +903,6 @@ async function openTodaySalesModal() {
         `;
         modal.style.display = 'block';
         
-        // Get today's sales
         const today = new Date();
         today.setHours(0, 0, 0, 0);
         const tomorrow = new Date(today);
@@ -840,153 +915,169 @@ async function openTodaySalesModal() {
             orderBy("date", "desc")
         );
         
-        const [salesSnapshot, returnsSnapshot] = await Promise.all([
+        const exchangesQuery = query(
+            collection(db, "exchanges"),
+            where("date", ">=", Timestamp.fromDate(today)),
+            where("date", "<", Timestamp.fromDate(tomorrow)),
+            orderBy("date", "desc")
+        );
+        
+        const [salesSnapshot, exchangesSnapshot] = await Promise.all([
             getDocs(salesQuery),
-            getDocs(query(collection(db, "returns"), 
-                where("date", ">=", Timestamp.fromDate(today)), 
-                where("date", "<", Timestamp.fromDate(tomorrow))))
+            getDocs(exchangesQuery)
         ]);
         
-        // Create a map of returned items for quick lookup
-        const returnedItems = new Map();
-        returnsSnapshot.forEach(doc => {
-            const ret = doc.data();
-            const key = `${ret.originalSaleId}_${ret.productId}`;
-            returnedItems.set(key, ret);
-        });
-        
-        if (salesSnapshot.empty) {
+        if (salesSnapshot.empty && exchangesSnapshot.empty) {
             modalBody.innerHTML = `
                 <div class="modal-empty">
                     <i class="fas fa-shopping-cart" style="font-size: 48px; color: #3498db;"></i>
-                    <p>No sales today yet!</p>
+                    <p>No sales or exchanges today yet!</p>
                     <p style="font-size: 14px; color: #7f8c8d; margin-top: 10px;">Start selling to see transactions here.</p>
                 </div>
             `;
             return;
         }
         
-        // Calculate totals
         let totalSales = 0;
         let totalItems = 0;
-        let totalRefunds = 0;
-        const sales = [];
+        let totalExchangeAdjustments = 0;
+        const transactions = [];
         
         salesSnapshot.forEach(doc => {
             const sale = doc.data();
             totalSales += sale.total || 0;
             
             let itemsCount = 0;
-            let refundedCount = 0;
-            let refundedAmount = 0;
-            
             if (sale.items && Array.isArray(sale.items)) {
                 sale.items.forEach(item => {
-                    const returnKey = `${doc.id}_${item.productId}`;
-                    const isReturned = returnedItems.has(returnKey);
                     itemsCount += item.quantity || 0;
-                    if (isReturned) {
-                        refundedCount += item.quantity || 0;
-                        refundedAmount += (item.price * item.quantity) || 0;
-                    }
                 });
             }
             totalItems += itemsCount;
-            totalRefunds += refundedAmount;
             
-            sales.push({
+            transactions.push({
                 id: doc.id,
-                ...sale,
-                itemsCount,
-                refundedCount,
-                refundedAmount,
-                hasReturns: sale.returns && sale.returns.length > 0
+                type: 'sale',
+                invoice: sale.invoiceNumber,
+                date: sale.date,
+                amount: sale.total,
+                cashierName: sale.cashierName,
+                paymentMethod: sale.paymentMethod,
+                itemsCount
             });
         });
         
-        // Build the modal content
+        exchangesSnapshot.forEach(doc => {
+            const exchange = doc.data();
+            totalExchangeAdjustments += exchange.priceDifference || 0;
+            
+            transactions.push({
+                id: doc.id,
+                type: 'exchange',
+                exchangeId: exchange.exchangeId,
+                date: exchange.date,
+                amount: exchange.priceDifference,
+                originalProduct: exchange.originalProduct,
+                newProduct: exchange.newProduct,
+                quantity: exchange.quantity,
+                cashierName: exchange.cashierName,
+                reason: exchange.reason
+            });
+        });
+        
+        transactions.sort((a, b) => {
+            const dateA = a.date?.toDate?.() || new Date(a.date);
+            const dateB = b.date?.toDate?.() || new Date(b.date);
+            return dateB - dateA;
+        });
+        
+        const netSales = totalSales + totalExchangeAdjustments;
+        
         let html = `
             <div class="modal-stats-summary">
                 <div class="modal-stat">
                     <span class="modal-stat-label">Transactions:</span>
-                    <span class="modal-stat-value">${sales.length}</span>
+                    <span class="modal-stat-value">${transactions.length}</span>
                 </div>
                 <div class="modal-stat">
                     <span class="modal-stat-label">Items Sold:</span>
                     <span class="modal-stat-value">${totalItems}</span>
                 </div>
                 <div class="modal-stat highlight">
-                    <span class="modal-stat-label">Total Sales:</span>
+                    <span class="modal-stat-label">Gross Sales:</span>
                     <span class="modal-stat-value">₱${totalSales.toFixed(2)}</span>
                 </div>
-                ${totalRefunds > 0 ? `
-                <div class="modal-stat refund">
-                    <span class="modal-stat-label">Refunds:</span>
-                    <span class="modal-stat-value refund">-₱${totalRefunds.toFixed(2)}</span>
+                ${totalExchangeAdjustments !== 0 ? `
+                <div class="modal-stat ${totalExchangeAdjustments > 0 ? 'positive' : 'negative'}">
+                    <span class="modal-stat-label">Exchange Adjustments:</span>
+                    <span class="modal-stat-value" style="color: ${totalExchangeAdjustments > 0 ? '#27ae60' : '#e74c3c'}">
+                        ${totalExchangeAdjustments > 0 ? '+' : ''}₱${totalExchangeAdjustments.toFixed(2)}
+                    </span>
+                </div>
+                <div class="modal-stat total">
+                    <span class="modal-stat-label">Net Sales:</span>
+                    <span class="modal-stat-value">₱${netSales.toFixed(2)}</span>
                 </div>
                 ` : ''}
             </div>
             <div class="modal-items-container">
         `;
         
-        sales.forEach(sale => {
-            const saleDate = sale.date?.toDate ? sale.date.toDate() : new Date();
-            const timeStr = saleDate.toLocaleTimeString('en-US', {
-                hour: '2-digit',
-                minute: '2-digit'
-            });
-            const hasRefunds = sale.refundedCount > 0;
-            
-            html += `
-                <div class="modal-item sale-item ${hasRefunds ? 'has-refunds' : ''}" onclick="viewSaleDetailsModal('${sale.id}')">
-                    <div class="modal-item-info">
-                        <div class="modal-item-name">
-                            <strong>${sale.invoiceNumber || '#' + sale.id.slice(-8).toUpperCase()}</strong>
-                            <span class="sale-time">${timeStr}</span>
-                            ${hasRefunds ? '<span class="refund-badge"><i class="fas fa-undo"></i> Refunded</span>' : ''}
+        transactions.forEach(trans => {
+            if (trans.type === 'sale') {
+                const transDate = trans.date?.toDate ? trans.date.toDate() : new Date();
+                const timeStr = transDate.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' });
+                const withinWindow = isWithinExchangeWindow(trans.date);
+                
+                html += `
+                    <div class="modal-item sale-item" onclick="viewSaleDetailsModal('${trans.id}')">
+                        <div class="modal-item-info">
+                            <div class="modal-item-name">
+                                <strong>${trans.invoice || '#' + trans.id.slice(-8).toUpperCase()}</strong>
+                                <span class="sale-time">${timeStr}</span>
+                                <span class="sale-badge">SALE</span>
+                            </div>
+                            <div class="modal-item-details">
+                                <span><i class="fas fa-user"></i> ${trans.cashierName || 'Unknown'}</span>
+                                <span><i class="fas fa-credit-card"></i> ${trans.paymentMethod || 'Cash'}</span>
+                                <span><i class="fas fa-box"></i> ${trans.itemsCount} items</span>
+                            </div>
                         </div>
-                        <div class="modal-item-details">
-                            <span><i class="fas fa-user"></i> ${sale.cashierName || 'Unknown'}</span>
-                            <span><i class="fas fa-credit-card"></i> ${sale.paymentMethod || 'Cash'}</span>
-                            <span><i class="fas fa-box"></i> ${sale.itemsCount} items</span>
-                            ${hasRefunds ? `
-                            <span class="refund-info">
-                                Refunded: ${sale.refundedCount} items (-₱${sale.refundedAmount.toFixed(2)})
-                            </span>
-                            ` : ''}
+                        <div class="modal-item-amount">
+                            <span class="sale-amount">₱${(trans.amount || 0).toFixed(2)}</span>
                         </div>
                     </div>
-                    <div class="modal-item-amount">
-                        <span class="sale-amount ${hasRefunds ? 'refunded' : ''}">₱${(sale.total || 0).toFixed(2)}</span>
-                        <div class="item-actions">
-                            <button class="btn-icon-small" onclick="event.stopPropagation(); viewSaleDetailsModal('${sale.id}')" title="View Details">
-                                <i class="fas fa-eye"></i>
-                            </button>
-                            ${!hasRefunds ? `
-                            <button class="btn-icon-small refund-btn" onclick="event.stopPropagation(); openRefundFromSale('${sale.id}')" title="Process Refund">
-                                <i class="fas fa-undo-alt"></i>
-                            </button>
-                            ` : ''}
+                `;
+            } else {
+                const transDate = trans.date?.toDate ? trans.date.toDate() : new Date();
+                const timeStr = transDate.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' });
+                const amountClass = trans.amount > 0 ? 'positive' : (trans.amount < 0 ? 'negative' : '');
+                const amountPrefix = trans.amount > 0 ? '+' : (trans.amount < 0 ? '' : '');
+                
+                html += `
+                    <div class="modal-item exchange-item">
+                        <div class="modal-item-info">
+                            <div class="modal-item-name">
+                                <strong>Exchange #${trans.exchangeId}</strong>
+                                <span class="sale-time">${timeStr}</span>
+                                <span class="exchange-badge-small"><i class="fas fa-exchange-alt"></i> EXCHANGE</span>
+                            </div>
+                            <div class="modal-item-details">
+                                <span><i class="fas fa-user"></i> ${trans.cashierName || 'Unknown'}</span>
+                                <span><i class="fas fa-undo-alt"></i> ${trans.originalProduct} → ${trans.newProduct}</span>
+                                <span><i class="fas fa-box"></i> Qty: ${trans.quantity}</span>
+                                <span class="exchange-reason">Reason: ${trans.reason}</span>
+                            </div>
+                        </div>
+                        <div class="modal-item-amount">
+                            <span class="sale-amount ${amountClass}">${amountPrefix}₱${Math.abs(trans.amount || 0).toFixed(2)}</span>
                         </div>
                     </div>
-                </div>
-            `;
+                `;
+            }
         });
         
-        html += `
-            </div>
-            <div class="modal-footer">
-                <button class="btn-primary" onclick="document.querySelector('[data-tab=\"sales\"]').click(); closeModal('todaySalesModal')">
-                    <i class="fas fa-chart-line"></i> View All Sales
-                </button>
-                ${totalRefunds > 0 ? `
-                <p class="refund-note">
-                    <i class="fas fa-info-circle"></i> Items with refunds cannot be refunded again
-                </p>
-                ` : ''}
-            </div>
-        `;
-        
+        html += `</div>`;
         modalBody.innerHTML = html;
         
     } catch (error) {
@@ -1004,7 +1095,6 @@ async function openTodaySalesModal() {
     }
 }
 
-// View Sale Details Modal (shows all items with refund status)
 async function viewSaleDetailsModal(saleId) {
     try {
         const modal = document.getElementById('saleDetailsModal');
@@ -1012,7 +1102,6 @@ async function viewSaleDetailsModal(saleId) {
         
         if (!modal || !panelBody) return;
         
-        // Show loading
         panelBody.innerHTML = `
             <div class="modal-loading">
                 <i class="fas fa-spinner fa-spin"></i>
@@ -1021,11 +1110,10 @@ async function viewSaleDetailsModal(saleId) {
         `;
         modal.style.display = 'block';
         
-        // Get sale data and returns
         const saleRef = doc(db, "sales", saleId);
-        const [saleDoc, returnsSnapshot] = await Promise.all([
+        const [saleDoc, exchangesSnapshot] = await Promise.all([
             getDoc(saleRef),
-            getDocs(query(collection(db, "returns"), where("originalSaleId", "==", saleId)))
+            getDocs(query(collection(db, "exchanges"), where("originalSaleId", "==", saleId)))
         ]);
         
         if (!saleDoc.exists()) {
@@ -1034,14 +1122,13 @@ async function viewSaleDetailsModal(saleId) {
         }
         
         const sale = saleDoc.data();
-        const returns = [];
-        returnsSnapshot.forEach(doc => returns.push(doc.data()));
+        const exchanges = [];
+        exchangesSnapshot.forEach(doc => exchanges.push(doc.data()));
         
-        // Create a map of returned quantities
-        const returnedQuantities = new Map();
-        returns.forEach(ret => {
-            const key = ret.productId;
-            returnedQuantities.set(key, (returnedQuantities.get(key) || 0) + ret.quantity);
+        const exchangedQuantities = new Map();
+        exchanges.forEach(ex => {
+            const key = ex.originalProductId;
+            exchangedQuantities.set(key, (exchangedQuantities.get(key) || 0) + ex.quantity);
         });
         
         const saleDate = sale.date?.toDate ? sale.date.toDate() : new Date();
@@ -1053,53 +1140,42 @@ async function viewSaleDetailsModal(saleId) {
             minute: '2-digit'
         });
         
-        // Build items list with refund status
         let itemsHtml = '';
         sale.items.forEach(item => {
-            const returnedQty = returnedQuantities.get(item.productId) || 0;
-            const remainingQty = item.quantity - returnedQty;
-            const isPartiallyReturned = returnedQty > 0 && returnedQty < item.quantity;
-            const isFullyReturned = returnedQty >= item.quantity;
+            const exchangedQty = exchangedQuantities.get(item.productId) || 0;
+            const remainingQty = item.quantity - exchangedQty;
+            const isPartiallyExchanged = exchangedQty > 0 && exchangedQty < item.quantity;
+            const isFullyExchanged = exchangedQty >= item.quantity;
             
             itemsHtml += `
-                <div class="item-row ${isFullyReturned ? 'fully-returned' : ''} ${isPartiallyReturned ? 'partially-returned' : ''}">
+                <div class="item-row ${isFullyExchanged ? 'fully-exchanged' : ''} ${isPartiallyExchanged ? 'partially-exchanged' : ''}">
                     <div class="item-info">
                         <div class="item-name">${item.name}</div>
                         <div class="item-meta">
                             <span>Code: ${item.code || 'N/A'}</span>
                             <span class="item-qty">Original Qty: ${item.quantity}</span>
-                            ${returnedQty > 0 ? `
-                                <span class="returned-qty">Returned: ${returnedQty}</span>
+                            ${exchangedQty > 0 ? `
+                                <span class="exchanged-qty">Exchanged: ${exchangedQty}</span>
                             ` : ''}
-                            ${remainingQty > 0 && returnedQty > 0 ? `
+                            ${remainingQty > 0 && exchangedQty > 0 ? `
                                 <span class="remaining-qty">Remaining: ${remainingQty}</span>
                             ` : ''}
                         </div>
                     </div>
                     <div class="item-price">
                         ₱${(item.price * item.quantity).toFixed(2)}
-                        ${returnedQty > 0 ? `
-                            <small class="refunded-amount">(-₱${(item.price * returnedQty).toFixed(2)})</small>
-                        ` : ''}
                     </div>
                 </div>`;
         });
         
-        const totalRefunded = returns.reduce((sum, r) => sum + r.amount, 0);
-        const netTotal = sale.total - totalRefunded;
-        
-        // Build the complete modal HTML
         panelBody.innerHTML = `
-            <!-- Invoice Card -->
             <div class="invoice-card">
                 <div class="invoice-header">
                     <div class="invoice-number">
                         ${sale.invoiceNumber || 'N/A'}
                         <span>${sale.paymentMethod || 'Cash'}</span>
                     </div>
-                    <div class="payment-badge ${totalRefunded > 0 ? 'partial-refund' : 'paid'}">
-                        ${totalRefunded > 0 ? 'PARTIALLY REFUNDED' : 'PAID'}
-                    </div>
+                    <div class="payment-badge">PAID</div>
                 </div>
                 <div class="invoice-details">
                     <div class="detail-row">
@@ -1120,7 +1196,6 @@ async function viewSaleDetailsModal(saleId) {
                 </div>
             </div>
             
-            <!-- Items Card -->
             <div class="items-card">
                 <div class="items-header">
                     <i class="fas fa-shopping-cart"></i>
@@ -1131,7 +1206,6 @@ async function viewSaleDetailsModal(saleId) {
                 </div>
             </div>
             
-            <!-- Summary Card -->
             <div class="summary-card">
                 <div class="summary-row">
                     <span class="summary-label">Subtotal:</span>
@@ -1143,19 +1217,12 @@ async function viewSaleDetailsModal(saleId) {
                     <span class="summary-value discount">-₱${sale.discountAmount.toFixed(2)}</span>
                 </div>
                 ` : ''}
-                ${totalRefunded > 0 ? `
-                <div class="summary-row refund">
-                    <span class="summary-label">Refunded Amount:</span>
-                    <span class="summary-value refund">-₱${totalRefunded.toFixed(2)}</span>
-                </div>
-                ` : ''}
                 <div class="summary-row total-row">
-                    <span class="total-label">${totalRefunded > 0 ? 'Net Total:' : 'Total Amount:'}</span>
-                    <span class="total-value">₱${netTotal.toFixed(2)}</span>
+                    <span class="total-label">Total Amount:</span>
+                    <span class="total-value">₱${sale.total.toFixed(2)}</span>
                 </div>
             </div>
             
-            <!-- Payment Card -->
             <div class="payment-card">
                 <div class="payment-header">
                     <i class="fas fa-credit-card"></i>
@@ -1177,34 +1244,37 @@ async function viewSaleDetailsModal(saleId) {
                 </div>
             </div>`;
         
-        // Add return history if any
-        if (returns.length > 0) {
+        if (exchanges.length > 0) {
             panelBody.innerHTML += `
-                <div class="return-card">
-                    <div class="return-header">
-                        <i class="fas fa-undo-alt"></i>
-                        <h3>Refund History</h3>
+                <div class="exchange-card">
+                    <div class="exchange-header">
+                        <i class="fas fa-exchange-alt"></i>
+                        <h3>Exchange History</h3>
                     </div>`;
             
-            returns.forEach(ret => {
+            exchanges.forEach(ex => {
+                const diffClass = ex.priceDifference > 0 ? 'positive' : (ex.priceDifference < 0 ? 'negative' : '');
+                const diffPrefix = ex.priceDifference > 0 ? '+' : '';
+                
                 panelBody.innerHTML += `
-                    <div class="return-item">
-                        <div class="return-row">
-                            <span class="return-product">${ret.productName}</span>
-                            <span class="return-qty">x${ret.quantity}</span>
-                            <span class="return-amount">-₱${ret.amount.toFixed(2)}</span>
+                    <div class="exchange-item">
+                        <div class="exchange-row">
+                            <span class="exchange-product">${ex.originalProduct} → ${ex.newProduct}</span>
+                            <span class="exchange-qty">x${ex.quantity}</span>
                         </div>
-                        <div class="return-reason">
-                            Reason: ${ret.reason || 'Not specified'}
+                        <div class="exchange-diff ${diffClass}">
+                            Price Difference: ${diffPrefix}₱${ex.priceDifference.toFixed(2)}
                         </div>
-                        <small>${formatDate(ret.date)}</small>
+                        <div class="exchange-reason">
+                            Reason: ${ex.reason || 'Not specified'}
+                        </div>
+                        <small>${formatDate(ex.date)}</small>
                     </div>`;
             });
             
             panelBody.innerHTML += `</div>`;
         }
         
-        // Add action buttons
         panelBody.innerHTML += `
             <div class="panel-actions">
                 <button class="panel-btn print" onclick="printReceipt('${saleId}')">
@@ -1216,7 +1286,7 @@ async function viewSaleDetailsModal(saleId) {
             </div>
             <div class="panel-footer">
                 <i class="fas fa-check-circle"></i> 
-                Transaction ${totalRefunded > 0 ? 'partially refunded' : 'completed'}
+                Transaction completed
             </div>`;
         
     } catch (error) {
@@ -1230,87 +1300,6 @@ async function viewSaleDetailsModal(saleId) {
     }
 }
 
-// Open Refund from Sale
-// Open Refund from Sale - FIXED for partial returns
-// Open Refund from Sale - FIXED for partial returns
-async function openRefundFromSale(saleId) {
-    try {
-        const saleRef = doc(db, "sales", saleId);
-        const saleDoc = await getDoc(saleRef);
-        
-        if (!saleDoc.exists()) {
-            showNotification('Sale not found', 'error');
-            return;
-        }
-        
-        const sale = saleDoc.data();
-        
-        // Get all returns for this sale
-        const returnsSnapshot = await getDocs(query(collection(db, "returns"), where("originalSaleId", "==", saleId)));
-        
-        // Calculate returned quantities per product
-        const returnedQuantities = new Map();
-        returnsSnapshot.forEach(doc => {
-            const ret = doc.data();
-            const currentQty = returnedQuantities.get(ret.productId) || 0;
-            returnedQuantities.set(ret.productId, currentQty + ret.quantity);
-        });
-        
-        // Open return modal with this sale preselected
-        const returnModal = document.getElementById('returnModal');
-        const saleInfoDiv = document.getElementById('returnSaleInfo');
-        
-        saleInfoDiv.innerHTML = `
-            <h3>Return for Sale #${sale.invoiceNumber}</h3>
-            <p>Date: ${formatDate(sale.date)}</p>
-            <p>Cashier: ${sale.cashierName}</p>
-            <p>Total: ₱${sale.total.toFixed(2)}</p>
-        `;
-        
-        returnModal.dataset.saleId = saleId;
-        
-        // Show product selection with available quantities
-        const resultsDiv = document.getElementById('returnSearchResults');
-        resultsDiv.innerHTML = '<h4>Select a product to return:</h4>';
-        
-        let hasReturnableItems = false;
-        sale.items.forEach(item => {
-            const returnedQty = returnedQuantities.get(item.productId) || 0;
-            const availableQty = item.quantity - returnedQty;
-            
-            if (availableQty > 0) {
-                hasReturnableItems = true;
-                const itemDiv = document.createElement('div');
-                itemDiv.className = 'search-result-item';
-                itemDiv.innerHTML = `
-                    <span class="product-name">${item.name}</span>
-                    <span class="product-details">
-                        Original: ${item.quantity} | 
-                        Returned: ${returnedQty} | 
-                        Available: <strong>${availableQty}</strong> - ₱${item.price.toFixed(2)} each
-                    </span>
-                `;
-                itemDiv.addEventListener('click', () => selectProductForReturn(saleId, item.productId, item.name, item.price, availableQty));
-                resultsDiv.appendChild(itemDiv);
-            }
-        });
-        
-        if (!hasReturnableItems) {
-            resultsDiv.innerHTML = '<p class="no-data">All items in this sale have been fully returned</p>';
-        }
-        
-        document.getElementById('returnSearch').value = '';
-        document.getElementById('returnSearch').disabled = true;
-        document.getElementById('selectedReturnInfo').style.display = 'none';
-        returnModal.style.display = 'block';
-        
-    } catch (error) {
-        console.error("Error opening refund:", error);
-        showNotification('Error opening refund', 'error');
-    }
-}
-
-// Close modal function
 function closeModal(modalId) {
     const modal = document.getElementById(modalId);
     if (modal) {
@@ -1318,17 +1307,17 @@ function closeModal(modalId) {
     }
 }
 
-// Make functions globally available
 window.openLowStockModal = openLowStockModal;
 window.openTodaySalesModal = openTodaySalesModal;
 window.viewSaleDetailsModal = viewSaleDetailsModal;
-window.openRefundFromSale = openRefundFromSale;
 window.closeModal = closeModal;
 window.editProduct = editProduct;
 
-// Load Inventory
+// ========== BATCH MANAGEMENT FUNCTIONS ==========
+
 async function loadInventory() {
     try {
+        console.log("Loading inventory...");
         const productsSnapshot = await getDocs(collection(db, "products"));
         const tableBody = document.getElementById('inventoryTableBody');
         if (!tableBody) return;
@@ -1336,32 +1325,94 @@ async function loadInventory() {
         tableBody.innerHTML = '';
         
         if (productsSnapshot.empty) {
-            tableBody.innerHTML = '<tr><td colspan="7" class="no-data">No products found</td></tr>';
+            tableBody.innerHTML = '<tr><td colspan="8" class="no-data">No products found</td></tr>';
             return;
         }
         
+        // Calculate today and 30 days from now
+        const today = new Date();
+        today.setHours(0, 0, 0, 0);
+        
+        const thirtyDaysFromNow = new Date(today);
+        thirtyDaysFromNow.setDate(thirtyDaysFromNow.getDate() + 30);
+        
+        let expiringCount = 0;
+        
         productsSnapshot.forEach(doc => {
-            const product = doc.data();
+            const product = { id: doc.id, ...doc.data() };
+            
             const stockClass = product.stock === 0 ? 'out-of-stock' : (product.stock < 10 ? 'low-stock' : '');
             const stockStatus = product.stock === 0 ? 'Out of Stock' : product.stock;
+            const discountStatus = product.discountable === false ? 
+                '<span class="non-discount-badge-table"><i class="fas fa-ban"></i> No Discount</span>' : 
+                '<span class="discount-badge-table"><i class="fas fa-tag"></i> Discountable</span>';
+            
+            // Calculate soon to expire quantity
+            let soonToExpireQty = 0;
+            let expiryDisplay = '<span class="no-expiry">—</span>';
+            
+            // Check if product has expiry date
+            if (product.expiryDate) {
+                let expiryDate;
+                if (product.expiryDate.toDate) {
+                    expiryDate = product.expiryDate.toDate();
+                } else {
+                    expiryDate = new Date(product.expiryDate);
+                }
+                
+                expiryDate.setHours(0, 0, 0, 0);
+                
+                // Calculate days until expiry
+                const daysUntilExpiry = Math.ceil((expiryDate - today) / (1000 * 60 * 60 * 24));
+                
+                // Check if expiring within 30 days
+                if (expiryDate <= thirtyDaysFromNow) {
+                    soonToExpireQty = product.stock || 0;
+                    expiringCount++;
+                    
+                    let status = '';
+                    let title = '';
+                    
+                    if (expiryDate < today) {
+                        status = 'expired';
+                        title = `EXPIRED (${Math.abs(daysUntilExpiry)} days ago)`;
+                    } else if (daysUntilExpiry <= 7) {
+                        status = 'expiring-critical';
+                        title = `Expires in ${daysUntilExpiry} days (CRITICAL)`;
+                    } else {
+                        status = 'expiring-soon';
+                        title = `Expires in ${daysUntilExpiry} days`;
+                    }
+                    
+                    expiryDisplay = `<span class="expiry-badge ${status}" title="${title}">
+                        <i class="fas fa-clock"></i> ${soonToExpireQty}
+                    </span>`;
+                } else {
+                    expiryDisplay = `<span class="no-expiry" title="Expires in ${daysUntilExpiry} days">—</span>`;
+                }
+            }
             
             const row = document.createElement('tr');
             row.innerHTML = `
                 <td>${product.code || 'N/A'}</td>
-                <td>${product.name || 'N/A'}</td>
+                <td>${product.name || 'N/A'} ${discountStatus}</td>
                 <td>${product.category || 'N/A'}</td>
                 <td>₱${(product.price || 0).toFixed(2)}</td>
                 <td class="${stockClass}">${stockStatus}</td>
-                <td>${product.expiryDate ? formatDate(product.expiryDate) : 'N/A'}</td>
+                <td>${expiryDisplay}</td>
                 <td>
-                    <button class="btn-icon edit-product" title="Edit Product" data-id="${doc.id}"><i class="fas fa-edit"></i></button>
-                    <button class="btn-icon delete-product" title="Delete Product" data-id="${doc.id}"><i class="fas fa-trash"></i></button>
+                    <button class="btn-icon edit-product" title="Edit Product" data-id="${product.id}"><i class="fas fa-edit"></i></button>
+                    <button class="btn-icon delete-product" title="Delete Product" data-id="${product.id}"><i class="fas fa-trash"></i></button>
+                    <button class="btn-icon view-batches" title="View Batches" data-id="${product.id}"><i class="fas fa-layer-group"></i></button>
                 </td>
             `;
             tableBody.appendChild(row);
         });
         
-        // Add event listeners to edit and delete buttons
+        // Update dashboard expiring count
+        const expiringEl = document.getElementById('expiringCount');
+        if (expiringEl) expiringEl.textContent = expiringCount;
+        
         document.querySelectorAll('.edit-product').forEach(btn => {
             btn.addEventListener('click', () => editProduct(btn.dataset.id));
         });
@@ -1370,18 +1421,318 @@ async function loadInventory() {
             btn.addEventListener('click', () => deleteProduct(btn.dataset.id));
         });
         
-        // Add mobile data labels
-        addMobileDataLabels();
+        document.querySelectorAll('.view-batches').forEach(btn => {
+            btn.addEventListener('click', () => viewProductBatches(btn.dataset.id));
+        });
         
-        // Add event listeners for filters
+        addMobileDataLabels();
         setupInventoryFilters();
         
     } catch (error) {
         console.error("Error loading inventory:", error);
     }
 }
+async function viewProductBatches(productId) {
+    try {
+        const productRef = doc(db, "products", productId);
+        const productDoc = await getDoc(productRef);
+        
+        if (!productDoc.exists()) {
+            showNotification('Product not found', 'error');
+            return;
+        }
+        
+        const product = productDoc.data();
+        
+        const batchesQuery = query(
+            collection(db, "batches"),
+            where("productId", "==", productId),
+            orderBy("expiryDate", "asc")
+        );
+        
+        const batchesSnapshot = await getDocs(batchesQuery);
+        
+        const modal = document.getElementById('batchModal');
+        const modalBody = document.getElementById('batchModalBody');
+        
+        if (!modal || !modalBody) return;
+        
+        let html = `
+            <div class="batch-header">
+                <h3><i class="fas fa-layer-group"></i> ${product.name} - Batches</h3>
+                <button class="btn-primary" onclick="openAddBatchModal('${productId}', '${product.name}')">
+                    <i class="fas fa-plus"></i> Add Batch
+                </button>
+            </div>
+            <div class="product-info-summary">
+                <p><strong>Total Stock:</strong> ${product.stock || 0}</p>
+                <p><strong>Price:</strong> ₱${(product.price || 0).toFixed(2)}</p>
+                <p><strong>Category:</strong> ${product.category || 'N/A'}</p>
+            </div>
+        `;
+        
+        if (batchesSnapshot.empty) {
+            html += '<p class="no-data">No batches found for this product. Click "Add Batch" to create one.</p>';
+        } else {
+            html += '<div class="batch-list">';
+            
+            const today = new Date();
+            today.setHours(0, 0, 0, 0);
+            
+            batchesSnapshot.forEach(batchDoc => {
+                const batch = batchDoc.data();
+                const batchId = batchDoc.id;
+                
+                let expiryDate = batch.expiryDate ? batch.expiryDate.toDate() : null;
+                let statusClass = '';
+                let statusText = '';
+                let daysUntil = '';
+                
+                if (expiryDate) {
+                    expiryDate.setHours(0, 0, 0, 0);
+                    const daysUntilExpiry = Math.ceil((expiryDate - today) / (1000 * 60 * 60 * 24));
+                    
+                    if (daysUntilExpiry < 0) {
+                        statusClass = 'expired';
+                        statusText = 'EXPIRED';
+                        daysUntil = `${Math.abs(daysUntilExpiry)} days ago`;
+                    } else if (daysUntilExpiry <= 7) {
+                        statusClass = 'expiring-critical';
+                        statusText = 'CRITICAL';
+                        daysUntil = `${daysUntilExpiry} days left`;
+                    } else if (daysUntilExpiry <= 30) {
+                        statusClass = 'expiring-soon';
+                        statusText = 'EXPIRING SOON';
+                        daysUntil = `${daysUntilExpiry} days left`;
+                    } else {
+                        statusClass = 'good';
+                        statusText = 'GOOD';
+                        daysUntil = `${daysUntilExpiry} days left`;
+                    }
+                }
+                
+                html += `
+                    <div class="batch-item ${statusClass}">
+                        <div class="batch-header-row">
+                            <span class="batch-number"><i class="fas fa-tag"></i> ${batch.batchNumber || 'N/A'}</span>
+                            <span class="batch-status ${statusClass}">${statusText}</span>
+                        </div>
+                        <div class="batch-details">
+                            <div class="batch-detail">
+                                <i class="fas fa-boxes"></i>
+                                <span><strong>Quantity:</strong> ${batch.quantity || 0}</span>
+                            </div>
+                            <div class="batch-detail">
+                                <i class="fas fa-calendar-alt"></i>
+                                <span><strong>Expiry:</strong> ${expiryDate ? expiryDate.toLocaleDateString() : 'No expiry'} ${daysUntil ? `(${daysUntil})` : ''}</span>
+                            </div>
+                            ${batch.notes ? `
+                            <div class="batch-detail">
+                                <i class="fas fa-sticky-note"></i>
+                                <span><strong>Notes:</strong> ${batch.notes}</span>
+                            </div>
+                            ` : ''}
+                        </div>
+                        <div class="batch-actions">
+                            <button class="btn-icon" onclick="deleteBatch('${batchId}', '${productId}')" title="Delete Batch">
+                                <i class="fas fa-trash"></i>
+                            </button>
+                        </div>
+                    </div>
+                `;
+            });
+            
+            html += '</div>';
+        }
+        
+        modalBody.innerHTML = html;
+        modal.style.display = 'block';
+        
+    } catch (error) {
+        console.error("Error viewing batches:", error);
+        showNotification('Error loading batches', 'error');
+    }
+}
+function openAddBatchModal(productId, productName) {
+    const modal = document.getElementById('addBatchModal');
+    const modalBody = document.getElementById('addBatchModalBody');
+    
+    if (!modal || !modalBody) return;
+    
+    modalBody.innerHTML = `
+        <div class="batch-header">
+            <h3>Add New Batch for ${productName}</h3>
+        </div>
+        <form id="batchForm" onsubmit="event.preventDefault(); saveBatch('${productId}');">
+            <div class="form-group">
+                <label>Batch Number <span class="required">*</span></label>
+                <input type="text" id="batchNumber" class="form-control" required placeholder="e.g., BATCH-2024-001">
+            </div>
+            <div class="form-group">
+                <label>Quantity <span class="required">*</span></label>
+                <input type="number" id="batchQuantity" class="form-control" min="1" required>
+            </div>
+            <div class="form-group">
+                <label>Expiry Date <span class="required">*</span></label>
+                <input type="date" id="batchExpiry" class="form-control" required>
+            </div>
+            <div class="form-group">
+                <label>Manufactured Date</label>
+                <input type="date" id="batchManufactured" class="form-control">
+            </div>
+            <div class="form-group">
+                <label>Supplier</label>
+                <input type="text" id="batchSupplier" class="form-control">
+            </div>
+            <div class="form-group">
+                <label>Cost Price</label>
+                <input type="number" id="batchCost" class="form-control" step="0.01">
+            </div>
+            <div class="form-actions">
+                <button type="submit" class="btn-primary">Add Batch</button>
+                <button type="button" class="btn-secondary" onclick="closeModal('addBatchModal')">Cancel</button>
+            </div>
+        </form>
+    `;
+    
+    modal.style.display = 'block';
+}
 
-// Setup inventory filters
+async function saveBatch(productId) {
+    try {
+        const batchNumber = document.getElementById('batchNumber').value;
+        const quantity = parseInt(document.getElementById('batchQuantity').value);
+        const expiryDate = document.getElementById('batchExpiry').value;
+        const manufacturedDate = document.getElementById('batchManufactured').value;
+        const supplier = document.getElementById('batchSupplier').value;
+        const cost = parseFloat(document.getElementById('batchCost').value) || 0;
+        
+        if (!batchNumber || !quantity || !expiryDate) {
+            showNotification('Please fill in all required fields', 'error');
+            return;
+        }
+        
+        // Get current product to update total stock
+        const productRef = doc(db, "products", productId);
+        const productDoc = await getDoc(productRef);
+        
+        if (!productDoc.exists()) {
+            showNotification('Product not found', 'error');
+            return;
+        }
+        
+        const currentStock = productDoc.data().stock || 0;
+        const newTotalStock = currentStock + quantity;
+        
+        // Create batch data
+        const batchData = {
+            productId: productId,
+            batchNumber: batchNumber,
+            quantity: quantity,
+            expiryDate: Timestamp.fromDate(new Date(expiryDate)),
+            manufacturedDate: manufacturedDate ? Timestamp.fromDate(new Date(manufacturedDate)) : null,
+            supplier: supplier || null,
+            cost: cost || null,
+            createdAt: Timestamp.now(),
+            createdBy: loggedInUserId
+        };
+        
+        // Add batch to Firestore
+        await addDoc(collection(db, "batches"), batchData);
+        
+        // Update product total stock
+        await updateDoc(productRef, {
+            stock: newTotalStock,
+            lastUpdated: Timestamp.now()
+        });
+        
+        // Log activity
+        await addDoc(collection(db, "activities"), {
+            type: 'stock',
+            description: `Added batch ${batchNumber} with ${quantity} units to ${productDoc.data().name}`,
+            timestamp: Timestamp.now(),
+            userId: loggedInUserId
+        });
+        
+        showNotification('Batch added successfully!', 'success');
+        
+        // Close modal and refresh views
+        closeModal('addBatchModal');
+        
+        // Refresh inventory if visible
+        const inventoryTab = document.getElementById('inventory-tab');
+        if (inventoryTab && inventoryTab.classList.contains('active')) {
+            loadInventory();
+        }
+        
+        // Refresh batches view if open
+        viewProductBatches(productId);
+        
+    } catch (error) {
+        console.error("Error saving batch:", error);
+        showNotification('Error saving batch: ' + error.message, 'error');
+    }
+}
+
+// ===== BATCH DEDUCTION FUNCTIONS (FIFO) =====
+
+async function deductFromBatches(productId, quantityToDeduct) {
+    try {
+        // Get all batches for this product with quantity > 0, sorted by expiry date (FIFO - oldest first)
+        const batchesQuery = query(
+            collection(db, "batches"),
+            where("productId", "==", productId),
+            where("quantity", ">", 0),
+            orderBy("expiryDate", "asc")
+        );
+        
+        const batchesSnapshot = await getDocs(batchesQuery);
+        
+        if (batchesSnapshot.empty) {
+            console.log(`No batches found for product ${productId}`);
+            return false;
+        }
+        
+        let remainingToDeduct = quantityToDeduct;
+        const batchUpdates = [];
+        
+        for (const batchDoc of batchesSnapshot.docs) {
+            if (remainingToDeduct <= 0) break;
+            
+            const batch = batchDoc.data();
+            const batchId = batchDoc.id;
+            const availableInBatch = batch.quantity;
+            
+            const deductFromThisBatch = Math.min(availableInBatch, remainingToDeduct);
+            const newBatchQuantity = availableInBatch - deductFromThisBatch;
+            
+            // Update this batch
+            batchUpdates.push(
+                updateDoc(doc(db, "batches", batchId), {
+                    quantity: newBatchQuantity,
+                    lastUpdated: Timestamp.now()
+                })
+            );
+            
+            remainingToDeduct -= deductFromThisBatch;
+        }
+        
+        // Execute all batch updates
+        await Promise.all(batchUpdates);
+        
+        if (remainingToDeduct > 0) {
+            console.warn(`Could not fully deduct ${quantityToDeduct} units. Remaining: ${remainingToDeduct}`);
+        }
+        
+        return true;
+    } catch (error) {
+        console.error("Error deducting from batches:", error);
+        throw error;
+    }
+}
+
+// ===== PRODUCT FUNCTIONS =====
+
 function setupInventoryFilters() {
     const categoryFilter = document.getElementById('categoryFilter');
     const stockFilter = document.getElementById('stockFilter');
@@ -1400,10 +1751,8 @@ function setupInventoryFilters() {
     }
 }
 
-// Edit Product function
 async function editProduct(productId) {
     try {
-        // Get product data
         const productRef = doc(db, "products", productId);
         const productDoc = await getDoc(productRef);
         
@@ -1414,31 +1763,37 @@ async function editProduct(productId) {
         
         const product = productDoc.data();
         
-        // Populate modal with product data
         document.getElementById('productCode').value = product.code || '';
         document.getElementById('productName').value = product.name || '';
         document.getElementById('productCategory').value = product.category || '';
         document.getElementById('productPrice').value = product.price || 0;
         document.getElementById('productStock').value = product.stock || 0;
         
-        // Format date for input
-        if (product.expiryDate) {
-            const expiryDate = product.expiryDate.toDate();
-            const formattedDate = expiryDate.toISOString().split('T')[0];
-            document.getElementById('productExpiry').value = formattedDate;
+        // Set discountable radio buttons
+        const discountableYes = document.getElementById('discountableYes');
+        const discountableNo = document.getElementById('discountableNo');
+        
+        if (discountableYes && discountableNo) {
+            if (product.discountable === false) {
+                discountableNo.checked = true;
+            } else {
+                discountableYes.checked = true;
+            }
         }
+        
+        // Don't show expiry date in product form anymore - it's managed by batches
+        document.getElementById('productExpiry').value = '';
+        document.getElementById('productExpiry').disabled = true;
+        document.getElementById('productExpiry').placeholder = 'Use batch system for expiry';
         
         document.getElementById('productDescription').value = product.description || '';
         
-        // Change modal title and button
         document.querySelector('#productModal .modal-header h2').textContent = 'Edit Product';
         const submitBtn = document.querySelector('#productForm button[type="submit"]');
         submitBtn.textContent = 'Update Product';
         
-        // Store product ID for update
         document.getElementById('productForm').dataset.editId = productId;
         
-        // Show modal
         const modal = document.getElementById('productModal');
         if (modal) {
             modal.style.display = 'block';
@@ -1450,18 +1805,35 @@ async function editProduct(productId) {
     }
 }
 
-// Delete Product function
 async function deleteProduct(productId) {
     if (confirm('Are you sure you want to delete this product?')) {
         try {
-            // Get product name before deleting
+            // First, check if there are any batches for this product
+            const batchesQuery = query(
+                collection(db, "batches"),
+                where("productId", "==", productId)
+            );
+            const batchesSnapshot = await getDocs(batchesQuery);
+            
+            if (!batchesSnapshot.empty) {
+                if (!confirm('This product has batches. Deleting it will also delete all batches. Continue?')) {
+                    return;
+                }
+                
+                // Delete all batches
+                const batch = writeBatch(db);
+                batchesSnapshot.forEach(doc => {
+                    batch.delete(doc.ref);
+                });
+                await batch.commit();
+            }
+            
             const productRef = doc(db, "products", productId);
             const productDoc = await getDoc(productRef);
             const productName = productDoc.exists() ? productDoc.data().name : 'Product';
             
             await deleteDoc(productRef);
             
-            // Add activity
             await addDoc(collection(db, "activities"), {
                 type: 'product',
                 description: `${productName} was deleted`,
@@ -1470,7 +1842,7 @@ async function deleteProduct(productId) {
             });
             
             showNotification('Product deleted successfully', 'success');
-            loadInventory(); // Reload inventory
+            loadInventory();
             
         } catch (error) {
             console.error("Error deleting product:", error);
@@ -1479,23 +1851,19 @@ async function deleteProduct(productId) {
     }
 }
 
-// Load Products for POS with real-time updates
 function loadProducts() {
     try {
         const productsGrid = document.getElementById('productsGrid');
         if (!productsGrid) return;
         
-        // Show loading state
         productsGrid.innerHTML = '<div class="loading">Loading products...</div>';
         
-        // Unsubscribe from previous listener if exists
         if (unsubscribeProducts) {
             unsubscribeProducts();
         }
         
         const productsRef = collection(db, "products");
         
-        // Set up real-time listener for products
         unsubscribeProducts = onSnapshot(productsRef, (snapshot) => {
             products = [];
             
@@ -1509,16 +1877,22 @@ function loadProducts() {
                 products.push(product);
             });
             
-            // Clear search input and show all products
+            // Clear search and filter inputs
             const posSearch = document.getElementById('posSearch');
-            if (posSearch) {
-                posSearch.value = '';
+            const posCategoryFilter = document.getElementById('posCategoryFilter');
+            if (posSearch) posSearch.value = '';
+            if (posCategoryFilter) {
+                posCategoryFilter.value = '';
+                posCategoryFilter.classList.remove('has-value');
             }
             
-            // Display all products
-            displayProducts(products);
+            // Hide filter summary
+            const filterSummary = document.getElementById('filterSummary');
+            if (filterSummary) {
+                filterSummary.style.display = 'none';
+            }
             
-            // Update cart display to reflect current stock
+            displayProducts(products);
             updateCartDisplay();
             
         }, (error) => {
@@ -1531,7 +1905,6 @@ function loadProducts() {
     }
 }
 
-// Display products in grid
 function displayProducts(productsToShow) {
     const productsGrid = document.getElementById('productsGrid');
     if (!productsGrid) return;
@@ -1540,10 +1913,17 @@ function displayProducts(productsToShow) {
     
     productsToShow.forEach(product => {
         const isOutOfStock = product.stock <= 0;
+        const discountStatus = product.discountable === false ? 'non-discountable' : '';
         
         const productCard = document.createElement('div');
-        productCard.className = `product-card ${isOutOfStock ? 'out-of-stock' : ''}`;
+        productCard.className = `product-card ${isOutOfStock ? 'out-of-stock' : ''} ${discountStatus}`;
         productCard.dataset.productId = product.id;
+        
+        let discountBadge = '';
+        if (product.discountable === false) {
+            discountBadge = '<span class="non-discount-badge"><i class="fas fa-ban"></i> No Discount</span>';
+        }
+        
         productCard.innerHTML = `
             <div class="product-image">
                 <i class="fas fa-pills"></i>
@@ -1551,6 +1931,7 @@ function displayProducts(productsToShow) {
             <h4>${product.name || 'Unnamed'}</h4>
             <p class="product-price">₱${(product.price || 0).toFixed(2)}</p>
             <p class="product-stock ${isOutOfStock ? 'text-danger' : ''}">Stock: ${product.stock || 0}</p>
+            ${discountBadge}
             ${isOutOfStock ? '<span class="out-of-stock-label">OUT OF STOCK</span>' : ''}
             <button class="add-to-cart" ${isOutOfStock ? 'disabled' : ''} 
                     data-id="${product.id}">
@@ -1560,22 +1941,18 @@ function displayProducts(productsToShow) {
         productsGrid.appendChild(productCard);
     });
     
-    // Add event listeners to add-to-cart buttons
     document.querySelectorAll('.add-to-cart:not([disabled])').forEach(btn => {
         btn.addEventListener('click', () => addToCart(btn.dataset.id));
     });
     
-    // Apply mobile scroll fix if on mobile
     if (window.innerWidth <= 768) {
         fixMobilePOSScroll();
     }
 }
 
-// Add to Cart with stock validation
 function addToCart(productId) {
     const product = products.find(p => p.id === productId);
     
-    // Check if product exists and has stock
     if (!product) {
         showNotification('Product not found', 'error');
         return;
@@ -1589,7 +1966,6 @@ function addToCart(productId) {
     const existingItem = cart.find(item => item.id === productId);
     
     if (existingItem) {
-        // Check if adding one more would exceed available stock
         if (existingItem.quantity + 1 > product.stock) {
             showNotification(`Only ${product.stock} item(s) available in stock!`, 'error');
             return;
@@ -1602,7 +1978,8 @@ function addToCart(productId) {
             name: product.name,
             price: product.price,
             quantity: 1,
-            stock: product.stock
+            stock: product.stock,
+            discountable: product.discountable !== false
         });
         showNotification(`${product.name} added to cart`, 'success');
     }
@@ -1610,12 +1987,9 @@ function addToCart(productId) {
     updateCartDisplay();
 }
 
-// Update Cart Display with Discount
 function updateCartDisplay() {
     const cartItems = document.getElementById('cartItems');
     const subtotalEl = document.getElementById('subtotal');
-    const discountEl = document.getElementById('discount');
-    const discountAmountEl = document.getElementById('discountAmount');
     const grandTotalEl = document.getElementById('grandTotal');
     
     if (!cartItems) return;
@@ -1626,8 +2000,6 @@ function updateCartDisplay() {
     if (cart.length === 0) {
         cartItems.innerHTML = '<p class="empty-cart">Cart is empty</p>';
         if (subtotalEl) subtotalEl.textContent = '₱0.00';
-        if (discountEl) discountEl.textContent = '₱0.00';
-        if (discountAmountEl) discountAmountEl.textContent = '₱0.00';
         if (grandTotalEl) grandTotalEl.textContent = '₱0.00';
         return;
     }
@@ -1636,15 +2008,21 @@ function updateCartDisplay() {
         const itemTotal = item.price * item.quantity;
         subtotal += itemTotal;
         
-        // Find current product stock
         const product = products.find(p => p.id === item.id);
         const currentStock = product ? product.stock : 0;
+        const discountable = item.discountable !== false;
         
         const cartItem = document.createElement('div');
         cartItem.className = 'cart-item';
+        
+        let discountableBadge = '';
+        if (!discountable) {
+            discountableBadge = '<span class="non-discount-badge-small"><i class="fas fa-ban"></i> No Discount</span>';
+        }
+        
         cartItem.innerHTML = `
             <div class="cart-item-info">
-                <h4>${item.name}</h4>
+                <h4>${item.name} ${discountableBadge}</h4>
                 <p>₱${item.price.toFixed(2)} x ${item.quantity}</p>
                 <small class="${item.quantity > currentStock ? 'text-danger' : ''}">
                     Available: ${currentStock}
@@ -1668,7 +2046,6 @@ function updateCartDisplay() {
         cartItems.appendChild(cartItem);
     });
     
-    // Add event listeners for quantity buttons
     document.querySelectorAll('.decrease-qty').forEach(btn => {
         btn.addEventListener('click', () => {
             const index = parseInt(btn.dataset.index);
@@ -1691,18 +2068,34 @@ function updateCartDisplay() {
         });
     });
     
-    // Calculate discount
     const discountPercentage = currentDiscount;
-    const discountAmount = subtotal * (discountPercentage / 100);
-    const grandTotal = subtotal - discountAmount;
+    
+    let discountableSubtotal = 0;
+    let nonDiscountableSubtotal = 0;
+    
+    cart.forEach(item => {
+        const itemTotal = item.price * item.quantity;
+        if (item.discountable !== false) {
+            discountableSubtotal += itemTotal;
+        } else {
+            nonDiscountableSubtotal += itemTotal;
+        }
+    });
+    
+    const discountAmount = discountableSubtotal * (discountPercentage / 100);
+    const grandTotal = discountableSubtotal + nonDiscountableSubtotal - discountAmount;
     
     if (subtotalEl) subtotalEl.textContent = `₱${subtotal.toFixed(2)}`;
-    if (discountEl) discountEl.textContent = `${discountPercentage}%`;
-    if (discountAmountEl) discountAmountEl.textContent = `-₱${discountAmount.toFixed(2)}`;
     if (grandTotalEl) grandTotalEl.textContent = `₱${grandTotal.toFixed(2)}`;
+    
+    window.cartDiscountBreakdown = {
+        discountableSubtotal,
+        nonDiscountableSubtotal,
+        discountAmount,
+        discountPercentage
+    };
 }
 
-// Decrease quantity
 function decreaseQuantity(index) {
     if (cart[index].quantity > 1) {
         cart[index].quantity--;
@@ -1712,7 +2105,6 @@ function decreaseQuantity(index) {
     updateCartDisplay();
 }
 
-// Increase quantity with stock validation
 function increaseQuantity(index) {
     const item = cart[index];
     const product = products.find(p => p.id === item.id);
@@ -1731,9 +2123,7 @@ function increaseQuantity(index) {
     updateCartDisplay();
 }
 
-// Show notification
 function showNotification(message, type = 'info') {
-    // Create notification element if it doesn't exist
     let notification = document.querySelector('.notification-toast');
     if (!notification) {
         notification = document.createElement('div');
@@ -1750,7 +2140,6 @@ function showNotification(message, type = 'info') {
     }, 3000);
 }
 
-// Clear Cart
 const clearCartBtn = document.getElementById('clearCartBtn');
 if (clearCartBtn) {
     clearCartBtn.addEventListener('click', () => {
@@ -1764,7 +2153,6 @@ if (clearCartBtn) {
     });
 }
 
-// Checkout Button
 const checkoutBtn = document.getElementById('checkoutBtn');
 if (checkoutBtn) {
     checkoutBtn.addEventListener('click', throttle(() => {
@@ -1773,7 +2161,6 @@ if (checkoutBtn) {
             return;
         }
         
-        // Validate stock before opening checkout modal
         let hasStockIssue = false;
         for (const item of cart) {
             const product = products.find(p => p.id === item.id);
@@ -1794,7 +2181,6 @@ if (checkoutBtn) {
     }, 1000));
 }
 
-// Update Checkout Modal with product names and discount
 function updateCheckoutModal() {
     const checkoutItems = document.getElementById('checkoutItems');
     const checkoutSubtotal = document.getElementById('checkoutSubtotal');
@@ -1804,12 +2190,20 @@ function updateCheckoutModal() {
     
     if (!checkoutItems || !checkoutTotal) return;
     
-    let subtotal = 0;
+    let discountableSubtotal = 0;
+    let nonDiscountableSubtotal = 0;
     checkoutItems.innerHTML = '';
     
     cart.forEach(item => {
         const itemTotal = item.price * item.quantity;
-        subtotal += itemTotal;
+        if (item.discountable !== false) {
+            discountableSubtotal += itemTotal;
+        } else {
+            nonDiscountableSubtotal += itemTotal;
+        }
+        
+        const discountableBadge = item.discountable === false ? 
+            '<span class="non-discount-badge-small">🚫 No Discount</span>' : '';
         
         const itemDiv = document.createElement('div');
         itemDiv.className = 'checkout-item';
@@ -1817,27 +2211,41 @@ function updateCheckoutModal() {
             <div class="checkout-product-info">
                 <span class="product-name">${item.name}</span>
                 <span class="product-detail">₱${item.price.toFixed(2)} x ${item.quantity}</span>
+                ${discountableBadge}
             </div>
             <span class="product-total">₱${itemTotal.toFixed(2)}</span>
         `;
         checkoutItems.appendChild(itemDiv);
     });
     
-    // Calculate discount
     const discountPercentage = currentDiscount;
-    const discountAmount = subtotal * (discountPercentage / 100);
+    const discountAmount = discountableSubtotal * (discountPercentage / 100);
+    const subtotal = discountableSubtotal + nonDiscountableSubtotal;
     const grandTotal = subtotal - discountAmount;
     
     if (checkoutSubtotal) checkoutSubtotal.textContent = `₱${subtotal.toFixed(2)}`;
-    if (checkoutDiscount) checkoutDiscount.textContent = `${discountPercentage}%`;
+    if (checkoutDiscount) checkoutDiscount.textContent = discountPercentage > 0 ? `${discountPercentage}%` : '0%';
     if (checkoutDiscountAmount) checkoutDiscountAmount.textContent = `-₱${discountAmount.toFixed(2)}`;
     if (checkoutTotal) checkoutTotal.textContent = `₱${grandTotal.toFixed(2)}`;
     
-    // Update amount tendered calculation
+    const discountNote = document.getElementById('discountNote');
+    if (!discountNote) {
+        const note = document.createElement('p');
+        note.id = 'discountNote';
+        note.className = 'discount-note';
+        note.innerHTML = discountPercentage > 0 ? 
+            `<i class="fas fa-info-circle"></i> Discount only applied to eligible items (₱${discountableSubtotal.toFixed(2)} of ₱${subtotal.toFixed(2)})` :
+            '';
+        checkoutItems.parentNode.insertBefore(note, checkoutItems.nextSibling);
+    } else {
+        discountNote.innerHTML = discountPercentage > 0 ? 
+            `<i class="fas fa-info-circle"></i> Discount only applied to eligible items (₱${discountableSubtotal.toFixed(2)} of ₱${subtotal.toFixed(2)})` :
+            '';
+    }
+    
     updateChangeAmount();
 }
 
-// Calculate change
 function updateChangeAmount() {
     const amountTendered = document.getElementById('amountTendered');
     const checkoutTotal = document.getElementById('checkoutTotal');
@@ -1856,7 +2264,6 @@ if (amountTendered) {
     amountTendered.addEventListener('input', updateChangeAmount);
 }
 
-// Discount dropdown change handler
 const discountSelect = document.getElementById('discountSelect');
 if (discountSelect) {
     discountSelect.addEventListener('change', (e) => {
@@ -1868,13 +2275,11 @@ if (discountSelect) {
     });
 }
 
-// Process Payment with discount - FIXED to prevent double processing
 const processPaymentBtn = document.getElementById('processPaymentBtn');
 if (processPaymentBtn) {
     processPaymentBtn.addEventListener('click', async function(e) {
         e.preventDefault();
         
-        // Prevent double processing
         if (isProcessingPayment) {
             showNotification('Payment is already being processed...', 'info');
             return;
@@ -1895,13 +2300,11 @@ if (processPaymentBtn) {
             return;
         }
         
-        // Set processing flag and disable button
         isProcessingPayment = true;
         const originalText = processPaymentBtn.textContent;
         processPaymentBtn.disabled = true;
         processPaymentBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Processing...';
         
-        // Double-check stock before processing payment
         let stockValid = true;
         for (const item of cart) {
             const productRef = doc(db, "products", item.id);
@@ -1929,19 +2332,26 @@ if (processPaymentBtn) {
         }
         
         try {
-            // Generate invoice number
             const invoiceNumber = await generateInvoiceNumber();
-            
-            // Get cashier name
             const cashierName = document.getElementById('sidebarUserName')?.textContent || 'Unknown';
             
-            // Calculate subtotal and discount
-            const subtotal = cart.reduce((sum, item) => sum + (item.price * item.quantity), 0);
+            let discountableSubtotal = 0;
+            let nonDiscountableSubtotal = 0;
+            
+            cart.forEach(item => {
+                const itemTotal = item.price * item.quantity;
+                if (item.discountable !== false) {
+                    discountableSubtotal += itemTotal;
+                } else {
+                    nonDiscountableSubtotal += itemTotal;
+                }
+            });
+            
             const discountPercentage = currentDiscount;
-            const discountAmount = subtotal * (discountPercentage / 100);
+            const discountAmount = discountableSubtotal * (discountPercentage / 100);
+            const subtotal = discountableSubtotal + nonDiscountableSubtotal;
             const totalAmount = subtotal - discountAmount;
             
-            // Create sale record
             const saleData = {
                 invoiceNumber: invoiceNumber,
                 items: cart.map(item => ({
@@ -1949,9 +2359,12 @@ if (processPaymentBtn) {
                     name: item.name,
                     price: item.price,
                     quantity: item.quantity,
-                    subtotal: item.price * item.quantity
+                    subtotal: item.price * item.quantity,
+                    discountable: item.discountable !== false
                 })),
                 subtotal: subtotal,
+                discountableSubtotal: discountableSubtotal,
+                nonDiscountableSubtotal: nonDiscountableSubtotal,
                 discountPercentage: discountPercentage,
                 discountAmount: discountAmount,
                 total: totalAmount,
@@ -1961,12 +2374,12 @@ if (processPaymentBtn) {
                 date: Timestamp.now(),
                 cashierId: loggedInUserId,
                 cashierName: cashierName,
-                returns: []
+                exchanges: []
             };
             
             await addDoc(collection(db, "sales"), saleData);
             
-            // Update product stock
+            // Update stock using batch system (FIFO)
             for (const item of cart) {
                 const productRef = doc(db, "products", item.id);
                 const productDoc = await getDoc(productRef);
@@ -1974,12 +2387,15 @@ if (processPaymentBtn) {
                     const currentStock = productDoc.data().stock;
                     const newStock = currentStock - item.quantity;
                     
+                    // Update product total stock
                     await updateDoc(productRef, {
                         stock: newStock,
                         lastUpdated: Timestamp.now()
                     });
                     
-                    // Add stock update activity
+                    // Deduct from batches (FIFO)
+                    await deductFromBatches(item.id, item.quantity);
+                    
                     await addDoc(collection(db, "activities"), {
                         type: 'stock',
                         description: `${item.name} stock updated: ${currentStock} → ${newStock}`,
@@ -1987,7 +2403,6 @@ if (processPaymentBtn) {
                         userId: loggedInUserId
                     });
                     
-                    // If stock becomes 0, log it
                     if (newStock === 0) {
                         await addDoc(collection(db, "activities"), {
                             type: 'stock',
@@ -1999,8 +2414,7 @@ if (processPaymentBtn) {
                 }
             }
             
-            // Add sale activity
-            let discountText = discountPercentage > 0 ? ` (${discountPercentage}% discount applied)` : '';
+            let discountText = discountPercentage > 0 ? ` (${discountPercentage}% discount applied to eligible items)` : '';
             await addDoc(collection(db, "activities"), {
                 type: 'sale',
                 description: `Sale #${invoiceNumber}: ${cart.length} items for ₱${totalAmount.toFixed(2)}${discountText}`,
@@ -2010,9 +2424,8 @@ if (processPaymentBtn) {
             
             showNotification(`Payment successful! Invoice #${invoiceNumber}`, 'success');
             
-            // Clear cart and close modal
             cart = [];
-            currentDiscount = 0; // Reset discount
+            currentDiscount = 0;
             if (discountSelect) discountSelect.value = '0';
             updateCartDisplay();
             
@@ -2021,7 +2434,6 @@ if (processPaymentBtn) {
                 modal.style.display = 'none';
             }
             
-            // Reset amount tendered
             if (amountTendered) {
                 amountTendered.value = '';
             }
@@ -2031,13 +2443,11 @@ if (processPaymentBtn) {
                 changeAmount.textContent = '₱0.00';
             }
             
-            // Refresh dashboard stats if on dashboard tab
             const dashboardTab = document.getElementById('dashboard-tab');
             if (dashboardTab && dashboardTab.classList.contains('active')) {
                 loadDashboardStats();
             }
             
-            // Refresh sales history if on sales tab
             const salesTab = document.getElementById('sales-tab');
             if (salesTab && salesTab.classList.contains('active')) {
                 loadSalesHistory(currentSortOrder);
@@ -2047,7 +2457,6 @@ if (processPaymentBtn) {
             console.error("Error processing payment:", error);
             showNotification('Error processing payment. Please try again.', 'error');
         } finally {
-            // Reset processing flag and button
             isProcessingPayment = false;
             processPaymentBtn.disabled = false;
             processPaymentBtn.textContent = originalText;
@@ -2055,7 +2464,6 @@ if (processPaymentBtn) {
     });
 }
 
-// Generate Invoice Number
 async function generateInvoiceNumber() {
     try {
         const today = new Date();
@@ -2063,7 +2471,6 @@ async function generateInvoiceNumber() {
         const month = (today.getMonth() + 1).toString().padStart(2, '0');
         const day = today.getDate().toString().padStart(2, '0');
         
-        // Get today's sales count
         const startOfDay = new Date(today.setHours(0, 0, 0, 0));
         const endOfDay = new Date(today.setHours(23, 59, 59, 999));
         
@@ -2076,62 +2483,50 @@ async function generateInvoiceNumber() {
         const salesSnapshot = await getDocs(salesQuery);
         const count = salesSnapshot.size + 1;
         
-        // Format: INV-YYMMDD-XXXX (where XXXX is sequential number)
         const invoiceNumber = `INV-${year}${month}${day}-${count.toString().padStart(4, '0')}`;
-        
         return invoiceNumber;
     } catch (error) {
         console.error("Error generating invoice number:", error);
-        // Fallback to timestamp-based invoice
         return `INV-${Date.now()}`;
     }
 }
 
-// Generate Return ID
-async function generateReturnId() {
+async function generateExchangeId() {
     try {
         const today = new Date();
         const year = today.getFullYear().toString().slice(-2);
         const month = (today.getMonth() + 1).toString().padStart(2, '0');
         const day = today.getDate().toString().padStart(2, '0');
         
-        // Get today's returns count
         const startOfDay = new Date(today.setHours(0, 0, 0, 0));
         const endOfDay = new Date(today.setHours(23, 59, 59, 999));
         
-        const returnsQuery = query(
-            collection(db, "returns"),
+        const exchangesQuery = query(
+            collection(db, "exchanges"),
             where("date", ">=", Timestamp.fromDate(startOfDay)),
             where("date", "<=", Timestamp.fromDate(endOfDay))
         );
         
-        const returnsSnapshot = await getDocs(returnsQuery);
-        const count = returnsSnapshot.size + 1;
+        const exchangesSnapshot = await getDocs(exchangesQuery);
+        const count = exchangesSnapshot.size + 1;
         
-        // Format: RTV-YYMMDD-XXXX (where XXXX is sequential number)
-        const returnId = `RTV-${year}${month}${day}-${count.toString().padStart(4, '0')}`;
-        
-        return returnId;
+        return `EXC-${year}${month}${day}-${count.toString().padStart(4, '0')}`;
     } catch (error) {
-        console.error("Error generating return ID:", error);
-        // Fallback to timestamp-based return ID
-        return `RTV-${Date.now()}`;
+        console.error("Error generating exchange ID:", error);
+        return `EXC-${Date.now()}`;
     }
 }
 
-// Toggle sort order
 function toggleSortOrder() {
     currentSortOrder = currentSortOrder === 'desc' ? 'asc' : 'desc';
     loadSalesHistory(currentSortOrder);
     
-    // Update sort button icon
     const sortIcon = document.querySelector('#sortSalesBtn i');
     if (sortIcon) {
         sortIcon.className = currentSortOrder === 'desc' ? 'fas fa-sort-amount-down' : 'fas fa-sort-amount-up';
     }
 }
 
-// Load Sales History with sorting
 async function loadSalesHistory(sortOrder = 'desc') {
     try {
         const salesQuery = query(
@@ -2152,17 +2547,22 @@ async function loadSalesHistory(sortOrder = 'desc') {
         
         salesSnapshot.forEach(doc => {
             const sale = doc.data();
-            const hasReturns = sale.returns && sale.returns.length > 0;
-            const returnBadge = hasReturns ? '<span class="return-badge">Has Returns</span>' : '';
+            const hasExchanges = sale.exchanges && sale.exchanges.length > 0;
+            const withinWindow = isWithinExchangeWindow(sale.date);
+            const exchangeBadge = hasExchanges ? 
+                '<span class="exchange-badge"><i class="fas fa-exchange-alt"></i> Exchanged</span>' : 
+                (withinWindow ? 
+                    '<span class="exchange-eligible"><i class="fas fa-clock"></i> Exchange Eligible</span>' : 
+                    '<span class="exchange-expired"><i class="fas fa-lock"></i> Exchange Window Closed</span>');
             
             const row = document.createElement('tr');
             row.innerHTML = `
-                <td><span class="invoice-badge">${sale.invoiceNumber || `#${doc.id.slice(-8).toUpperCase()}`}</span> ${returnBadge}</td>
+                <td><span class="invoice-badge">${sale.invoiceNumber || `#${doc.id.slice(-8).toUpperCase()}`}</span> ${exchangeBadge}</td>
                 <td>${formatDate(sale.date)}</td>
                 <td>
                     <div class="items-list">
                         ${sale.items?.map(item => `
-                            <div class="item-name">${item.name} x${item.quantity}</div>
+                            <div class="item-name">${item.name} x${item.quantity} ${item.discountable === false ? '🚫' : ''}</div>
                         `).join('') || 'No items'}
                     </div>
                 </td>
@@ -2172,13 +2572,14 @@ async function loadSalesHistory(sortOrder = 'desc') {
                 <td>
                     <button class="btn-icon view-sale" title="View Details" data-id="${doc.id}"><i class="fas fa-eye"></i></button>
                     <button class="btn-icon print-sale" title="Print Receipt" data-id="${doc.id}"><i class="fas fa-print"></i></button>
-                    <button class="btn-icon return-sale" title="Return Items" data-id="${doc.id}"><i class="fas fa-undo"></i></button>
+                    ${withinWindow ? 
+                        `<button class="btn-icon exchange-sale" title="Exchange Product" data-id="${doc.id}"><i class="fas fa-exchange-alt"></i></button>` : 
+                        `<button class="btn-icon exchange-disabled" disabled title="Exchange not available (24h policy)"><i class="fas fa-lock"></i></button>`}
                 </td>
             `;
             tableBody.appendChild(row);
         });
         
-        // Add event listeners to view, print, and return buttons
         document.querySelectorAll('.view-sale').forEach(btn => {
             btn.addEventListener('click', () => viewSaleDetails(btn.dataset.id));
         });
@@ -2187,11 +2588,10 @@ async function loadSalesHistory(sortOrder = 'desc') {
             btn.addEventListener('click', () => printReceipt(btn.dataset.id));
         });
         
-        document.querySelectorAll('.return-sale').forEach(btn => {
-            btn.addEventListener('click', () => openReturnModal(btn.dataset.id));
+        document.querySelectorAll('.exchange-sale').forEach(btn => {
+            btn.addEventListener('click', () => openExchangeModal(btn.dataset.id));
         });
         
-        // Add mobile data labels
         addMobileDataLabels();
         
     } catch (error) {
@@ -2199,7 +2599,6 @@ async function loadSalesHistory(sortOrder = 'desc') {
     }
 }
 
-// Filter sales by date
 const salesDateFilter = document.getElementById('salesDateFilter');
 if (salesDateFilter) {
     salesDateFilter.addEventListener('change', async (e) => {
@@ -2237,17 +2636,22 @@ if (salesDateFilter) {
             
             salesSnapshot.forEach(doc => {
                 const sale = doc.data();
-                const hasReturns = sale.returns && sale.returns.length > 0;
-                const returnBadge = hasReturns ? '<span class="return-badge">Has Returns</span>' : '';
+                const hasExchanges = sale.exchanges && sale.exchanges.length > 0;
+                const withinWindow = isWithinExchangeWindow(sale.date);
+                const exchangeBadge = hasExchanges ? 
+                    '<span class="exchange-badge"><i class="fas fa-exchange-alt"></i> Exchanged</span>' : 
+                    (withinWindow ? 
+                        '<span class="exchange-eligible"><i class="fas fa-clock"></i> Exchange Eligible</span>' : 
+                        '<span class="exchange-expired"><i class="fas fa-lock"></i> Exchange Window Closed</span>');
                 
                 const row = document.createElement('tr');
                 row.innerHTML = `
-                    <td><span class="invoice-badge">${sale.invoiceNumber || `#${doc.id.slice(-8).toUpperCase()}`}</span> ${returnBadge}</td>
+                    <td><span class="invoice-badge">${sale.invoiceNumber || `#${doc.id.slice(-8).toUpperCase()}`}</span> ${exchangeBadge}</td>
                     <td>${formatDate(sale.date)}</td>
                     <td>
                         <div class="items-list">
                             ${sale.items?.map(item => `
-                                <div class="item-name">${item.name} x${item.quantity}</div>
+                                <div class="item-name">${item.name} x${item.quantity} ${item.discountable === false ? '🚫' : ''}</div>
                             `).join('') || 'No items'}
                         </div>
                     </td>
@@ -2257,13 +2661,14 @@ if (salesDateFilter) {
                     <td>
                         <button class="btn-icon view-sale" title="View Details" data-id="${doc.id}"><i class="fas fa-eye"></i></button>
                         <button class="btn-icon print-sale" title="Print Receipt" data-id="${doc.id}"><i class="fas fa-print"></i></button>
-                        <button class="btn-icon return-sale" title="Return Items" data-id="${doc.id}"><i class="fas fa-undo"></i></button>
+                        ${withinWindow ? 
+                            `<button class="btn-icon exchange-sale" title="Exchange Product" data-id="${doc.id}"><i class="fas fa-exchange-alt"></i></button>` : 
+                            `<button class="btn-icon exchange-disabled" disabled title="Exchange not available (24h policy)"><i class="fas fa-lock"></i></button>`}
                     </td>
                 `;
                 tableBody.appendChild(row);
             });
             
-            // Add mobile data labels
             addMobileDataLabels();
             
         } catch (error) {
@@ -2272,13 +2677,11 @@ if (salesDateFilter) {
     });
 }
 
-// Sort button event listener
 const sortBtn = document.getElementById('sortSalesBtn');
 if (sortBtn) {
     sortBtn.addEventListener('click', toggleSortOrder);
 }
 
-// View Sale Details function
 async function viewSaleDetails(saleId) {
     try {
         const saleRef = doc(db, "sales", saleId);
@@ -2291,7 +2694,6 @@ async function viewSaleDetails(saleId) {
         
         const sale = saleDoc.data();
         
-        // Format items list for display
         let details = `
 SALE DETAILS
 ════════════════════════
@@ -2299,28 +2701,30 @@ Invoice: ${sale.invoiceNumber}
 Date: ${formatDate(sale.date)}
 Cashier: ${sale.cashierName}
 Payment: ${sale.paymentMethod}
-Discount: ${sale.discountPercentage || 0}%
+Discount: ${sale.discountPercentage || 0}% (applied to eligible items)
 ════════════════════════
 ITEMS:
 `;
         
         sale.items.forEach(item => {
-            details += `${item.name} - ₱${item.price.toFixed(2)} x ${item.quantity} = ₱${(item.price * item.quantity).toFixed(2)}\n`;
+            const discountMarker = item.discountable === false ? ' [NO DISCOUNT]' : '';
+            details += `${item.name}${discountMarker} - ₱${item.price.toFixed(2)} x ${item.quantity} = ₱${(item.price * item.quantity).toFixed(2)}\n`;
         });
         
         details += `════════════════════════
 Subtotal: ₱${sale.subtotal.toFixed(2)}
+Discountable Subtotal: ₱${sale.discountableSubtotal?.toFixed(2) || '0.00'}
+Non-Discountable Subtotal: ₱${sale.nonDiscountableSubtotal?.toFixed(2) || '0.00'}
 Discount (${sale.discountPercentage || 0}%): -₱${(sale.discountAmount || 0).toFixed(2)}
 Total: ₱${sale.total.toFixed(2)}
 Amount Tendered: ₱${sale.amountTendered.toFixed(2)}
 Change: ₱${sale.change.toFixed(2)}`;
         
-        // Add return history if any
-        if (sale.returns && sale.returns.length > 0) {
+        if (sale.exchanges && sale.exchanges.length > 0) {
             details += `\n════════════════════════
-RETURNS:`;
-            sale.returns.forEach(ret => {
-                details += `\n${ret.productName} x${ret.quantity} - ₱${ret.amount.toFixed(2)} (${ret.date ? formatDate(ret.date) : 'N/A'})`;
+EXCHANGES:`;
+            sale.exchanges.forEach(ex => {
+                details += `\n${ex.originalProduct} x${ex.quantity} → ${ex.newProduct} (${ex.priceDifference >= 0 ? '+' : '-'}₱${Math.abs(ex.priceDifference).toFixed(2)})`;
             });
         }
         
@@ -2332,198 +2736,189 @@ RETURNS:`;
     }
 }
 
-// Print Receipt function
 function printReceipt(saleId) {
     showNotification('Print feature coming soon', 'info');
     console.log('Print receipt for sale:', saleId);
 }
 
-// ========== VOID/RETURN FUNCTIONALITY ==========
+// ========== EXCHANGE FUNCTIONALITY ==========
 
-// Void button in POS
-const voidButton = document.getElementById('voidButton');
-if (voidButton) {
-    voidButton.addEventListener('click', () => {
-        openReturnModal();
+const exchangeButton = document.getElementById('exchangeButton');
+if (exchangeButton) {
+    exchangeButton.addEventListener('click', () => {
+        openExchangeModal();
     });
 }
 
-// Open Return Modal
-async function openReturnModal(saleId = null) {
+async function openExchangeModal(saleId = null) {
     try {
-        let returnModal = document.getElementById('returnModal');
-        if (!returnModal) {
-            console.error("Return modal not found");
+        let exchangeModal = document.getElementById('exchangeModal');
+        if (!exchangeModal) {
+            console.error("Exchange modal not found");
             return;
         }
         
-        // Clear previous data
-        document.getElementById('returnSearch').value = '';
-        document.getElementById('returnSearchResults').innerHTML = '';
-        document.getElementById('selectedReturnInfo').style.display = 'none';
+        document.getElementById('exchangeSearch').value = '';
+        document.getElementById('exchangeSearchResults').innerHTML = '';
+        document.getElementById('selectedExchangeInfo').style.display = 'none';
         
-        // Update sale info based on whether we have a specific sale ID
-        const saleInfoDiv = document.getElementById('returnSaleInfo');
+        const newProductSelect = document.getElementById('newProductSelect');
+        if (newProductSelect) {
+            newProductSelect.innerHTML = '<option value="">-- Select replacement product --</option>';
+        }
+        
+        await loadNewProducts();
+        
+        const saleInfoDiv = document.getElementById('exchangeSaleInfo');
         if (saleId) {
             const saleRef = doc(db, "sales", saleId);
             const saleDoc = await getDoc(saleRef);
             
             if (saleDoc.exists()) {
                 const sale = saleDoc.data();
+                const withinWindow = isWithinExchangeWindow(sale.date);
+                const timeRemaining = getTimeRemaining(sale.date);
+                
                 saleInfoDiv.innerHTML = `
-                    <h3>Return for Sale #${sale.invoiceNumber}</h3>
+                    <h3>Exchange for Sale #${sale.invoiceNumber}</h3>
                     <p>Date: ${formatDate(sale.date)}</p>
                     <p>Cashier: ${sale.cashierName}</p>
                     <p>Total: ₱${sale.total.toFixed(2)}</p>
+                    <p class="${withinWindow ? 'text-success' : 'text-danger'}">
+                        <i class="fas ${withinWindow ? 'fa-check-circle' : 'fa-exclamation-circle'}"></i>
+                        ${withinWindow ? `Exchange available - ${timeRemaining}` : 'Exchange window expired (24 hours passed)'}
+                    </p>
                 `;
-                returnModal.dataset.saleId = saleId;
+                
+                if (!withinWindow) {
+                    showNotification('This transaction is outside the 24-hour exchange window', 'error');
+                    exchangeModal.style.display = 'none';
+                    return;
+                }
+                
+                exchangeModal.dataset.saleId = saleId;
             }
         } else {
-            saleInfoDiv.innerHTML = '<h3>Search for a sale to process return</h3>';
-            returnModal.dataset.saleId = '';
+            saleInfoDiv.innerHTML = '<h3>Search for a sale to process exchange</h3><p class="policy-note"><i class="fas fa-clock"></i> Note: Exchanges only allowed within 24 hours of purchase</p>';
+            exchangeModal.dataset.saleId = '';
         }
         
-        // Show modal
-        returnModal.style.display = 'block';
+        exchangeModal.style.display = 'block';
         
     } catch (error) {
-        console.error("Error opening return modal:", error);
-        showNotification('Error opening return form', 'error');
+        console.error("Error opening exchange modal:", error);
+        showNotification('Error opening exchange form', 'error');
     }
 }
 
-// Search for sales and products
-const returnSearch = document.getElementById('returnSearch');
-if (returnSearch) {
-    returnSearch.addEventListener('input', debounce(async (e) => {
+async function loadNewProducts() {
+    try {
+        const productsSnapshot = await getDocs(collection(db, "products"));
+        const select = document.getElementById('newProductSelect');
+        if (!select) return;
+        
+        select.innerHTML = '<option value="">-- Select replacement product --</option>';
+        
+        productsSnapshot.forEach(doc => {
+            const product = doc.data();
+            if (product.stock > 0) {
+                const discountStatus = product.discountable === false ? ' (No Discount)' : '';
+                const option = document.createElement('option');
+                option.value = doc.id;
+                option.dataset.price = product.price || 0;
+                option.dataset.name = product.name || 'Unnamed';
+                option.dataset.stock = product.stock || 0;
+                option.dataset.discountable = product.discountable !== false;
+                option.textContent = `${product.name}${discountStatus} - ₱${(product.price || 0).toFixed(2)} (Stock: ${product.stock})`;
+                select.appendChild(option);
+            }
+        });
+    } catch (error) {
+        console.error("Error loading new products:", error);
+    }
+}
+
+const exchangeSearch = document.getElementById('exchangeSearch');
+if (exchangeSearch) {
+    exchangeSearch.addEventListener('input', debounce(async (e) => {
         const searchTerm = e.target.value.toLowerCase().trim();
         if (searchTerm.length < 2) {
-            document.getElementById('returnSearchResults').innerHTML = '';
+            document.getElementById('exchangeSearchResults').innerHTML = '';
             return;
         }
         
-        await searchSalesForReturn(searchTerm);
+        try {
+            const resultsDiv = document.getElementById('exchangeSearchResults');
+            resultsDiv.innerHTML = '<div class="loading">Searching...</div>';
+            
+            const invoiceQuery = query(
+                collection(db, "sales"),
+                where("invoiceNumber", ">=", searchTerm.toUpperCase()),
+                where("invoiceNumber", "<=", searchTerm.toUpperCase() + '\uf8ff'),
+                limit(20)
+            );
+            
+            const invoiceSnapshot = await getDocs(invoiceQuery);
+            let results = [];
+            
+            invoiceSnapshot.forEach(doc => {
+                const sale = doc.data();
+                const withinWindow = isWithinExchangeWindow(sale.date);
+                
+                if (withinWindow) {
+                    results.push({
+                        id: doc.id,
+                        invoice: sale.invoiceNumber,
+                        date: sale.date,
+                        total: sale.total,
+                        items: sale.items,
+                        timeRemaining: getTimeRemaining(sale.date)
+                    });
+                }
+            });
+            
+            results.sort((a, b) => {
+                const dateA = a.date?.toDate?.() || new Date(a.date);
+                const dateB = b.date?.toDate?.() || new Date(b.date);
+                return dateB - dateA;
+            });
+            
+            results = results.slice(0, 10);
+            
+            if (results.length === 0) {
+                resultsDiv.innerHTML = '<p class="no-data">No eligible sales found within 24-hour exchange window</p>';
+                return;
+            }
+            
+            resultsDiv.innerHTML = '';
+            
+            results.forEach(result => {
+                const resultDiv = document.createElement('div');
+                resultDiv.className = 'search-result-item';
+                
+                resultDiv.innerHTML = `
+                    <span class="invoice-badge">${result.invoice}</span>
+                    <div class="product-info">
+                        <div class="product-name">Sale with ${result.items.length} items</div>
+                        <div class="product-details">
+                            ${formatDate(result.date)} - ₱${result.total.toFixed(2)}
+                            <span class="text-success"><i class="fas fa-clock"></i> ${result.timeRemaining}</span>
+                        </div>
+                    </div>
+                `;
+                
+                resultDiv.addEventListener('click', () => selectSaleForExchange(result.id));
+                resultsDiv.appendChild(resultDiv);
+            });
+            
+        } catch (error) {
+            console.error("Error searching sales:", error);
+            document.getElementById('exchangeSearchResults').innerHTML = '<p class="error">Error searching</p>';
+        }
     }, 300));
 }
 
-// Search sales for return
-async function searchSalesForReturn(searchTerm) {
-    try {
-        const resultsDiv = document.getElementById('returnSearchResults');
-        resultsDiv.innerHTML = '<div class="loading">Searching...</div>';
-        
-        // Search by invoice number (exact match)
-        const invoiceQuery = query(
-            collection(db, "sales"),
-            where("invoiceNumber", ">=", searchTerm.toUpperCase()),
-            where("invoiceNumber", "<=", searchTerm.toUpperCase() + '\uf8ff'),
-            limit(10)
-        );
-        
-        // Search by product name in items
-        const allSalesQuery = query(
-            collection(db, "sales"),
-            orderBy("date", "desc"),
-            limit(50)
-        );
-        
-        const invoiceSnapshot = await getDocs(invoiceQuery);
-        const allSalesSnapshot = await getDocs(allSalesQuery);
-        
-        let results = [];
-        
-        // Add invoice matches
-        invoiceSnapshot.forEach(doc => {
-            const sale = doc.data();
-            results.push({
-                id: doc.id,
-                type: 'sale',
-                invoice: sale.invoiceNumber,
-                date: sale.date,
-                total: sale.total,
-                items: sale.items
-            });
-        });
-        
-        // Search in items for product name
-        allSalesSnapshot.forEach(doc => {
-            const sale = doc.data();
-            // Check if already added
-            if (results.some(r => r.id === doc.id)) return;
-            
-            // Search in items
-            const matchingItems = sale.items.filter(item => 
-                item.name.toLowerCase().includes(searchTerm)
-            );
-            
-            if (matchingItems.length > 0) {
-                results.push({
-                    id: doc.id,
-                    type: 'product',
-                    invoice: sale.invoiceNumber,
-                    date: sale.date,
-                    total: sale.total,
-                    items: matchingItems,
-                    allItems: sale.items
-                });
-            }
-        });
-        
-        // Limit to 10 results
-        results = results.slice(0, 10);
-        
-        displaySearchResults(results);
-        
-    } catch (error) {
-        console.error("Error searching sales:", error);
-        document.getElementById('returnSearchResults').innerHTML = '<p class="error">Error searching</p>';
-    }
-}
-
-// Display search results
-function displaySearchResults(results) {
-    const resultsDiv = document.getElementById('returnSearchResults');
-    
-    if (results.length === 0) {
-        resultsDiv.innerHTML = '<p class="no-data">No matching sales found</p>';
-        return;
-    }
-    
-    resultsDiv.innerHTML = '';
-    
-    results.forEach(result => {
-        const resultDiv = document.createElement('div');
-        resultDiv.className = 'search-result-item';
-        
-        if (result.type === 'sale') {
-            // Show entire sale
-            resultDiv.innerHTML = `
-                <span class="invoice-badge">${result.invoice}</span>
-                <div class="product-info">
-                    <div class="product-name">Sale with ${result.items.length} items</div>
-                    <div class="product-details">${formatDate(result.date)} - ₱${result.total.toFixed(2)}</div>
-                </div>
-            `;
-            resultDiv.addEventListener('click', () => selectSaleForReturn(result.id));
-        } else {
-            // Show specific product
-            const product = result.items[0];
-            resultDiv.innerHTML = `
-                <span class="invoice-badge">${result.invoice}</span>
-                <div class="product-info">
-                    <div class="product-name">${product.name}</div>
-                    <div class="product-details">Qty: ${product.quantity} - ₱${product.price.toFixed(2)} each</div>
-                </div>
-            `;
-            resultDiv.addEventListener('click', () => selectProductForReturn(result.id, product.productId, product.name, product.price, product.quantity));
-        }
-        
-        resultsDiv.appendChild(resultDiv);
-    });
-}
-
-// Select entire sale for return
-async function selectSaleForReturn(saleId) {
+async function selectSaleForExchange(saleId) {
     try {
         const saleRef = doc(db, "sales", saleId);
         const saleDoc = await getDoc(saleRef);
@@ -2535,31 +2930,59 @@ async function selectSaleForReturn(saleId) {
         
         const sale = saleDoc.data();
         
-        // Store sale data
-        const returnModal = document.getElementById('returnModal');
-        returnModal.dataset.saleId = saleId;
+        if (!isWithinExchangeWindow(sale.date)) {
+            showNotification('This transaction is outside the 24-hour exchange window', 'error');
+            return;
+        }
         
-        // Update sale info
-        document.getElementById('returnSaleInfo').innerHTML = `
-            <h3>Return for Sale #${sale.invoiceNumber}</h3>
+        const exchangeModal = document.getElementById('exchangeModal');
+        exchangeModal.dataset.saleId = saleId;
+        
+        document.getElementById('exchangeSaleInfo').innerHTML = `
+            <h3>Exchange for Sale #${sale.invoiceNumber}</h3>
             <p>Date: ${formatDate(sale.date)}</p>
             <p>Cashier: ${sale.cashierName}</p>
             <p>Total: ₱${sale.total.toFixed(2)}</p>
+            <p class="text-success"><i class="fas fa-check-circle"></i> Eligible for exchange (within 24 hours)</p>
         `;
         
-        // Show product selection
-        const resultsDiv = document.getElementById('returnSearchResults');
-        resultsDiv.innerHTML = '<h4>Select a product to return:</h4>';
+        const resultsDiv = document.getElementById('exchangeSearchResults');
+        resultsDiv.innerHTML = '<h4>Select a product to exchange:</h4>';
+        
+        const exchangesSnapshot = await getDocs(query(collection(db, "exchanges"), where("originalSaleId", "==", saleId)));
+        const exchangedQuantities = new Map();
+        exchangesSnapshot.forEach(doc => {
+            const ex = doc.data();
+            const key = ex.originalProductId;
+            exchangedQuantities.set(key, (exchangedQuantities.get(key) || 0) + ex.quantity);
+        });
         
         sale.items.forEach(item => {
-            const itemDiv = document.createElement('div');
-            itemDiv.className = 'search-result-item';
-            itemDiv.innerHTML = `
-                <span class="product-name">${item.name}</span>
-                <span class="product-details">Qty: ${item.quantity} - ₱${item.price.toFixed(2)}</span>
-            `;
-            itemDiv.addEventListener('click', () => selectProductForReturn(saleId, item.productId, item.name, item.price, item.quantity));
-            resultsDiv.appendChild(itemDiv);
+            const exchangedQty = exchangedQuantities.get(item.productId) || 0;
+            const availableQty = item.quantity - exchangedQty;
+            const discountStatus = item.discountable === false ? ' (No Discount)' : '';
+            
+            if (availableQty > 0) {
+                const itemDiv = document.createElement('div');
+                itemDiv.className = 'search-result-item';
+                itemDiv.innerHTML = `
+                    <span class="product-name">${item.name}${discountStatus}</span>
+                    <span class="product-details">
+                        Original: ${item.quantity} | 
+                        Exchanged: ${exchangedQty} | 
+                        Available: <strong>${availableQty}</strong> - ₱${item.price.toFixed(2)} each
+                    </span>
+                `;
+                itemDiv.addEventListener('click', () => selectProductForExchange(
+                    saleId, 
+                    item.productId, 
+                    item.name, 
+                    item.price, 
+                    availableQty,
+                    item.discountable !== false
+                ));
+                resultsDiv.appendChild(itemDiv);
+            }
         });
         
     } catch (error) {
@@ -2568,213 +2991,314 @@ async function selectSaleForReturn(saleId) {
     }
 }
 
-// Select specific product for return
-// Select specific product for return
-function selectProductForReturn(saleId, productId, productName, price, availableQty) {
-    const selectedInfo = document.getElementById('selectedReturnInfo');
+function selectProductForExchange(saleId, productId, productName, price, availableQty, discountable = true) {
+    const selectedInfo = document.getElementById('selectedExchangeInfo');
     
-    document.getElementById('returnInvoice').textContent = saleId.slice(-8).toUpperCase();
-    document.getElementById('returnProductName').textContent = productName;
-    document.getElementById('returnPrice').textContent = price.toFixed(2);
-    document.getElementById('returnAvailableQty').textContent = availableQty;
+    document.getElementById('exchangeInvoice').textContent = saleId.slice(-8).toUpperCase();
+    document.getElementById('exchangeProductName').textContent = productName;
+    document.getElementById('exchangePrice').textContent = price.toFixed(2);
+    document.getElementById('exchangeAvailableQty').textContent = availableQty;
     
-    const returnQuantity = document.getElementById('returnQuantity');
-    returnQuantity.max = availableQty;
-    returnQuantity.value = 1;
-    returnQuantity.min = 1;
+    const exchangeQuantity = document.getElementById('exchangeQuantity');
+    exchangeQuantity.max = availableQty;
+    exchangeQuantity.value = 1;
+    exchangeQuantity.min = 1;
     
-    // Store data in dataset
     selectedInfo.dataset.saleId = saleId;
     selectedInfo.dataset.productId = productId;
     selectedInfo.dataset.productName = productName;
     selectedInfo.dataset.price = price;
     selectedInfo.dataset.maxQuantity = availableQty;
+    selectedInfo.dataset.discountable = discountable;
     
-    // Clear search results
-    document.getElementById('returnSearchResults').innerHTML = '';
-    document.getElementById('returnSearch').value = '';
+    document.getElementById('exchangeSearchResults').innerHTML = '';
+    document.getElementById('exchangeSearch').value = '';
     
-    // Show selected info
     selectedInfo.style.display = 'block';
+    
+    const newProductSelect = document.getElementById('newProductSelect');
+    newProductSelect.addEventListener('change', calculatePriceDifference);
+    exchangeQuantity.addEventListener('input', calculatePriceDifference);
+    
+    document.getElementById('priceDifference').style.display = 'none';
 }
-// Process Return - FIXED to prevent double processing
-// Process Return - FIXED to prevent double processing
-// Process Return - FIXED for partial returns
-const processReturnBtn = document.getElementById('processReturnBtn');
-if (processReturnBtn) {
-    processReturnBtn.addEventListener('click', async function(e) {
+
+function calculatePriceDifference() {
+    const newProductSelect = document.getElementById('newProductSelect');
+    const exchangeQuantity = document.getElementById('exchangeQuantity');
+    const selectedInfo = document.getElementById('selectedExchangeInfo');
+    
+    if (!newProductSelect.value || !exchangeQuantity.value) {
+        document.getElementById('priceDifference').style.display = 'none';
+        return;
+    }
+    
+    const originalPrice = parseFloat(selectedInfo.dataset.price);
+    const originalQty = parseInt(exchangeQuantity.value);
+    const originalTotal = originalPrice * originalQty;
+    
+    const selectedOption = newProductSelect.options[newProductSelect.selectedIndex];
+    const newPrice = parseFloat(selectedOption.dataset.price);
+    const newStock = parseInt(selectedOption.dataset.stock);
+    const exchangeQty = parseInt(exchangeQuantity.value);
+    
+    if (exchangeQty > newStock) {
+        showNotification(`Only ${newStock} items available in stock`, 'error');
+        exchangeQuantity.value = newStock;
+        return;
+    }
+    
+    const newTotal = newPrice * exchangeQty;
+    const difference = newTotal - originalTotal;
+    
+    const priceDiffDiv = document.getElementById('priceDifference');
+    const diffAmountSpan = document.getElementById('diffAmount');
+    const diffNoteSpan = document.getElementById('diffNote');
+    
+    priceDiffDiv.style.display = 'block';
+    
+    if (difference > 0) {
+        diffAmountSpan.innerHTML = `+₱${difference.toFixed(2)} (Customer pays extra)`;
+        diffAmountSpan.style.color = '#e74c3c';
+        diffNoteSpan.textContent = 'Customer needs to pay the difference';
+    } else if (difference < 0) {
+        diffAmountSpan.innerHTML = `-₱${Math.abs(difference).toFixed(2)} (Refund to customer)`;
+        diffAmountSpan.style.color = '#27ae60';
+        diffNoteSpan.textContent = 'Store refunds the difference';
+    } else {
+        diffAmountSpan.innerHTML = `₱0.00 (Even exchange)`;
+        diffAmountSpan.style.color = '#3498db';
+        diffNoteSpan.textContent = 'No price difference';
+    }
+}
+
+const processExchangeBtn = document.getElementById('processExchangeBtn');
+if (processExchangeBtn) {
+    processExchangeBtn.addEventListener('click', async function(e) {
         e.preventDefault();
         
-        if (isProcessingReturn) {
-            showNotification('Return is already being processed...', 'info');
+        if (isProcessingExchange) {
+            showNotification('Exchange is already being processed...', 'info');
             return;
         }
         
-        const selectedInfo = document.getElementById('selectedReturnInfo');
+        const selectedInfo = document.getElementById('selectedExchangeInfo');
         const saleId = selectedInfo.dataset.saleId;
-        const productId = selectedInfo.dataset.productId;
-        const productName = selectedInfo.dataset.productName;
-        const price = parseFloat(selectedInfo.dataset.price);
-        const returnQuantity = parseInt(document.getElementById('returnQuantity').value);
-        const returnReason = document.getElementById('returnReason').value;
+        const originalProductId = selectedInfo.dataset.productId;
+        const originalProductName = selectedInfo.dataset.productName;
+        const originalPrice = parseFloat(selectedInfo.dataset.price);
+        const exchangeQuantity = parseInt(document.getElementById('exchangeQuantity').value);
+        const exchangeReason = document.getElementById('exchangeReason').value;
         const maxQuantity = parseInt(selectedInfo.dataset.maxQuantity);
+        const originalDiscountable = selectedInfo.dataset.discountable === 'true';
         
-        // Validate return quantity
-        if (returnQuantity < 1 || returnQuantity > maxQuantity) {
+        const newProductSelect = document.getElementById('newProductSelect');
+        if (!newProductSelect.value) {
+            showNotification('Please select a replacement product', 'error');
+            return;
+        }
+        
+        const selectedOption = newProductSelect.options[newProductSelect.selectedIndex];
+        const newProductId = newProductSelect.value;
+        const newProductName = selectedOption.dataset.name;
+        const newPrice = parseFloat(selectedOption.dataset.price);
+        const newStock = parseInt(selectedOption.dataset.stock);
+        const newDiscountable = selectedOption.dataset.discountable === 'true';
+        
+        if (exchangeQuantity < 1 || exchangeQuantity > maxQuantity) {
             showNotification(`Invalid quantity. Max allowed: ${maxQuantity}`, 'error');
             return;
         }
         
-        isProcessingReturn = true;
-        const originalText = processReturnBtn.textContent;
-        processReturnBtn.disabled = true;
-        processReturnBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Processing...';
+        if (exchangeQuantity > newStock) {
+            showNotification(`Insufficient stock for replacement product. Only ${newStock} available.`, 'error');
+            return;
+        }
+        
+        const saleRef = doc(db, "sales", saleId);
+        const saleDoc = await getDoc(saleRef);
+        
+        if (!saleDoc.exists()) {
+            showNotification('Sale not found', 'error');
+            return;
+        }
+        
+        const sale = saleDoc.data();
+        if (!isWithinExchangeWindow(sale.date)) {
+            showNotification('This transaction is outside the 24-hour exchange window', 'error');
+            return;
+        }
+        
+        isProcessingExchange = true;
+        const originalText = processExchangeBtn.textContent;
+        processExchangeBtn.disabled = true;
+        processExchangeBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Processing...';
         
         try {
-            const returnAmount = price * returnQuantity;
+            const originalTotal = originalPrice * exchangeQuantity;
+            const newTotal = newPrice * exchangeQuantity;
+            const priceDifference = newTotal - originalTotal;
             
-            // Get sale reference
-            const saleRef = doc(db, "sales", saleId);
-            const saleDoc = await getDoc(saleRef);
-            
-            if (!saleDoc.exists()) {
-                showNotification('Sale not found', 'error');
-                isProcessingReturn = false;
-                processReturnBtn.disabled = false;
-                processReturnBtn.textContent = originalText;
-                return;
-            }
-            
-            const sale = saleDoc.data();
-            
-            // Get all returns for this sale to check total returned quantity
-            const returnsSnapshot = await getDocs(query(collection(db, "returns"), where("originalSaleId", "==", saleId)));
-            let totalReturnedQty = 0;
-            returnsSnapshot.forEach(doc => {
-                const ret = doc.data();
-                if (ret.productId === productId) {
-                    totalReturnedQty += ret.quantity;
-                }
-            });
-            
-            // Check if trying to return more than available
-            const originalQuantity = sale.items.find(item => item.productId === productId)?.quantity || 0;
-            if (totalReturnedQty + returnQuantity > originalQuantity) {
-                showNotification(`Cannot return more than ${originalQuantity - totalReturnedQty} items`, 'error');
-                isProcessingReturn = false;
-                processReturnBtn.disabled = false;
-                processReturnBtn.textContent = originalText;
-                return;
-            }
-            
-            // Generate return ID
-            const returnId = await generateReturnId();
-            
-            // Get cashier name
+            const exchangeId = await generateExchangeId();
             const cashierName = document.getElementById('sidebarUserName')?.textContent || 'Unknown';
             
-            // Create return record
-            const returnData = {
-                returnId: returnId,
+            const exchangeData = {
+                exchangeId: exchangeId,
                 originalSaleId: saleId,
                 originalInvoiceNumber: sale.invoiceNumber,
-                productId: productId,
-                productName: productName,
-                price: price,
-                quantity: returnQuantity,
-                amount: returnAmount,
-                reason: returnReason,
+                originalProductId: originalProductId,
+                originalProduct: originalProductName,
+                originalPrice: originalPrice,
+                originalDiscountable: originalDiscountable,
+                newProductId: newProductId,
+                newProduct: newProductName,
+                newPrice: newPrice,
+                newDiscountable: newDiscountable,
+                quantity: exchangeQuantity,
+                originalTotal: originalTotal,
+                newTotal: newTotal,
+                priceDifference: priceDifference,
+                reason: exchangeReason,
                 date: Timestamp.now(),
                 cashierId: loggedInUserId,
                 cashierName: cashierName,
                 status: 'completed'
             };
             
-            await addDoc(collection(db, "returns"), returnData);
+            await addDoc(collection(db, "exchanges"), exchangeData);
             
-            // Update product stock (add back the returned quantity)
-            const productRef = doc(db, "products", productId);
-            const productDoc = await getDoc(productRef);
+            const originalProductRef = doc(db, "products", originalProductId);
+            const originalProductDoc = await getDoc(originalProductRef);
             
-            if (productDoc.exists()) {
-                const currentStock = productDoc.data().stock;
-                const newStock = currentStock + returnQuantity;
+            if (originalProductDoc.exists()) {
+                const currentStock = originalProductDoc.data().stock;
+                const newStock = currentStock + exchangeQuantity;
                 
-                await updateDoc(productRef, {
+                await updateDoc(originalProductRef, {
                     stock: newStock,
                     lastUpdated: Timestamp.now()
                 });
+            }
+            
+            const newProductRef = doc(db, "products", newProductId);
+            const newProductDoc = await getDoc(newProductRef);
+            
+            if (newProductDoc.exists()) {
+                const currentStock = newProductDoc.data().stock;
+                const updatedStock = currentStock - exchangeQuantity;
                 
-                // Add stock update activity
-                await addDoc(collection(db, "activities"), {
-                    type: 'stock',
-                    description: `Return: ${returnQuantity} ${productName} added back to stock`,
-                    timestamp: Timestamp.now(),
-                    userId: loggedInUserId
+                await updateDoc(newProductRef, {
+                    stock: updatedStock,
+                    lastUpdated: Timestamp.now()
                 });
             }
             
-            // Update sale record to mark as having returns
-            const saleReturns = sale.returns || [];
-            saleReturns.push({
-                returnId: returnId,
-                productId: productId,
-                productName: productName,
-                quantity: returnQuantity,
-                amount: returnAmount,
+            const saleExchanges = sale.exchanges || [];
+            saleExchanges.push({
+                exchangeId: exchangeId,
+                originalProductId: originalProductId,
+                originalProduct: originalProductName,
+                newProductId: newProductId,
+                newProduct: newProductName,
+                quantity: exchangeQuantity,
+                priceDifference: priceDifference,
                 date: Timestamp.now()
             });
             
             await updateDoc(saleRef, {
-                returns: saleReturns,
-                total: sale.total - returnAmount,
-                subtotal: sale.subtotal - returnAmount,
+                exchanges: saleExchanges,
                 lastUpdated: Timestamp.now()
             });
             
-            // Add return activity
+            const diffText = priceDifference > 0 ? 
+                `+₱${priceDifference.toFixed(2)}` : 
+                priceDifference < 0 ? 
+                `-₱${Math.abs(priceDifference).toFixed(2)}` : 
+                '₱0.00';
+            
             await addDoc(collection(db, "activities"), {
-                type: 'return',
-                description: `Return #${returnId}: ${returnQuantity} x ${productName} - ₱${returnAmount.toFixed(2)} refunded`,
+                type: 'exchange',
+                description: `Exchange #${exchangeId}: ${exchangeQuantity} x ${originalProductName} → ${newProductName} (${diffText})`,
                 timestamp: Timestamp.now(),
                 userId: loggedInUserId
             });
             
-            showNotification(`Return processed successfully! Return ID: ${returnId}`, 'success');
+            if (priceDifference > 0) {
+                showNotification(`Exchange processed! Customer pays additional ₱${priceDifference.toFixed(2)}`, 'success');
+            } else if (priceDifference < 0) {
+                showNotification(`Exchange processed! Refund ₱${Math.abs(priceDifference).toFixed(2)} to customer`, 'success');
+            } else {
+                showNotification('Exchange processed! Even exchange completed.', 'success');
+            }
             
-            // Close modal
-            document.getElementById('returnModal').style.display = 'none';
+            generateExchangeReceipt(exchangeData);
             
-            // Refresh data
+            document.getElementById('exchangeModal').style.display = 'none';
+            
             await Promise.all([
                 loadDashboardStats(),
                 loadSalesHistory(currentSortOrder),
-                loadInventory()
+                loadInventory(),
+                loadReportsTab()
             ]);
             
-            // Refresh today's sales modal if it's open
-            if (document.getElementById('todaySalesModal').style.display === 'block') {
-                openTodaySalesModal();
-            }
-            
         } catch (error) {
-            console.error("Error processing return:", error);
-            showNotification('Error processing return', 'error');
+            console.error("Error processing exchange:", error);
+            showNotification('Error processing exchange', 'error');
         } finally {
-            isProcessingReturn = false;
-            processReturnBtn.disabled = false;
-            processReturnBtn.textContent = originalText;
+            isProcessingExchange = false;
+            processExchangeBtn.disabled = false;
+            processExchangeBtn.textContent = originalText;
         }
     });
 }
+
+function generateExchangeReceipt(exchangeData) {
+    const originalDiscountNote = exchangeData.originalDiscountable ? '' : ' (Non-discountable)';
+    const newDiscountNote = exchangeData.newDiscountable ? '' : ' (Non-discountable)';
+    
+    const receipt = `
+╔════════════════════════════════╗
+║     GMDC BOTICA PHARMACY       ║
+║       EXCHANGE RECEIPT          ║
+╠════════════════════════════════╣
+║ Exchange ID: ${exchangeData.exchangeId}
+║ Date: ${formatDate(new Date())}
+║ Cashier: ${exchangeData.cashierName}
+╠════════════════════════════════╣
+║ EXCHANGE DETAILS:              ║
+║ Returned: ${exchangeData.originalProduct}${originalDiscountNote}
+║   Qty: ${exchangeData.quantity} × ₱${exchangeData.originalPrice.toFixed(2)}
+║   Total: ₱${exchangeData.originalTotal.toFixed(2)}
+║                                ║
+║ Received: ${exchangeData.newProduct}${newDiscountNote}
+║   Qty: ${exchangeData.quantity} × ₱${exchangeData.newPrice.toFixed(2)}
+║   Total: ₱${exchangeData.newTotal.toFixed(2)}
+╠════════════════════════════════╣
+║ PRICE DIFFERENCE:              ║
+${exchangeData.priceDifference > 0 ? 
+`║   Customer pays: +₱${exchangeData.priceDifference.toFixed(2)}` : 
+exchangeData.priceDifference < 0 ? 
+`║   Refund to customer: ₱${Math.abs(exchangeData.priceDifference).toFixed(2)}` : 
+'║   Even exchange - No payment'}
+╠════════════════════════════════╣
+║ Reason: ${exchangeData.reason}
+╠════════════════════════════════╣
+║       24-HOUR EXCHANGE         ║
+║         POLICY APPLIED          ║
+╚════════════════════════════════╝
+    `;
+    
+    console.log(receipt);
+    showNotification('Exchange receipt generated', 'success');
+}
+
 // ========== PDF REPORT GENERATION FUNCTIONS ==========
 
-// Download Sales History as PDF
 async function downloadSalesPDF() {
     try {
         showNotification('Generating PDF report...', 'info');
         
-        // Get the current filtered sales data
         const tableBody = document.getElementById('salesTableBody');
         const rows = tableBody.querySelectorAll('tr');
         
@@ -2783,7 +3307,6 @@ async function downloadSalesPDF() {
             return;
         }
         
-        // Create new PDF document
         const { jsPDF } = window.jspdf;
         const doc = new jsPDF({
             orientation: 'landscape',
@@ -2791,22 +3314,18 @@ async function downloadSalesPDF() {
             format: 'a4'
         });
         
-        // Add header
         doc.setFontSize(18);
         doc.setTextColor(44, 62, 80);
         doc.text('GMDC BOTICA - Sales History Report', 14, 15);
         
-        // Add date and time
         doc.setFontSize(10);
         doc.setTextColor(127, 140, 141);
         const now = new Date();
         doc.text(`Generated on: ${formatDateForPDF(now)}`, 14, 22);
         
-        // Get cashier name
         const cashierName = document.getElementById('sidebarUserName')?.textContent || 'Unknown';
         doc.text(`Generated by: ${cashierName}`, 14, 27);
         
-        // Prepare table data
         const tableColumn = ["Invoice #", "Date", "Items", "Total (₱)", "Payment Method", "Cashier"];
         const tableRows = [];
         
@@ -2819,7 +3338,7 @@ async function downloadSalesPDF() {
             const cells = row.querySelectorAll('td');
             if (cells.length < 6) return;
             
-            const invoice = cells[0]?.textContent?.replace(/Has Returns/g, '').trim() || 'N/A';
+            const invoice = cells[0]?.textContent?.replace(/Exchange Eligible|Exchange Window Closed|Exchanged/g, '').trim() || 'N/A';
             const date = cells[1]?.textContent || 'N/A';
             const items = cells[2]?.textContent?.replace(/\s+/g, ' ').trim() || 'No items';
             const totalText = cells[3]?.textContent || '₱0.00';
@@ -2840,12 +3359,10 @@ async function downloadSalesPDF() {
             ]);
         });
         
-        // Add summary
         doc.setFontSize(12);
         doc.setTextColor(52, 152, 219);
         doc.text(`Summary: ${transactionCount} transactions | Total Sales: ₱${grandTotal.toFixed(2)}`, 14, 35);
         
-        // Add table using autoTable
         doc.autoTable({
             head: [tableColumn],
             body: tableRows,
@@ -2870,7 +3387,6 @@ async function downloadSalesPDF() {
             margin: { top: 40 }
         });
         
-        // Add footer
         const pageCount = doc.internal.getNumberOfPages();
         for (let i = 1; i <= pageCount; i++) {
             doc.setPage(i);
@@ -2888,7 +3404,6 @@ async function downloadSalesPDF() {
             );
         }
         
-        // Save PDF
         const fileName = `sales_report_${formatDateForFileName(now)}.pdf`;
         doc.save(fileName);
         
@@ -2900,8 +3415,6 @@ async function downloadSalesPDF() {
     }
 }
 
-// Download Reports Tab PDF (Enhanced with Product Sales Breakdown)
-// Download Reports Tab PDF (Enhanced with all report content)
 async function downloadReportPDF() {
     try {
         showNotification('Generating comprehensive PDF report...', 'info');
@@ -2913,14 +3426,12 @@ async function downloadReportPDF() {
         const monthNames = ['January', 'February', 'March', 'April', 'May', 'June', 
                             'July', 'August', 'September', 'October', 'November', 'December'];
         
-        // Get chart as image
         const chartCanvas = document.getElementById('reportChart');
         if (!chartCanvas) {
             showNotification('No chart data to export', 'error');
             return;
         }
         
-        // Get stats from reportStats
         const reportStats = document.getElementById('reportStats');
         const statsCards = reportStats.querySelectorAll('.stat-card');
         let totalSales = 0;
@@ -2933,13 +3444,10 @@ async function downloadReportPDF() {
             averageSale = parseFloat(statsCards[2]?.querySelector('p')?.textContent?.replace('₱', '') || 0);
         }
         
-        // Get product sales breakdown data
         const productSalesData = await getProductSalesData(selectedMonth, selectedYear);
-        
-        // Get the raw sales data for detailed breakdown
         const salesData = await getDetailedSalesData(selectedMonth, selectedYear);
+        const exchangeData = await getExchangeData(selectedMonth, selectedYear);
         
-        // Create new PDF document (portrait for better content display)
         const { jsPDF } = window.jspdf;
         const doc = new jsPDF({
             orientation: 'portrait',
@@ -2951,7 +3459,6 @@ async function downloadReportPDF() {
         const pageWidth = doc.internal.pageSize.getWidth();
         const margin = 14;
         
-        // ========== HEADER SECTION ==========
         doc.setFontSize(22);
         doc.setTextColor(44, 62, 80);
         doc.setFont('helvetica', 'bold');
@@ -2969,20 +3476,17 @@ async function downloadReportPDF() {
         doc.text(`${monthNames[selectedMonth]} ${selectedYear} - ${period.charAt(0).toUpperCase() + period.slice(1)} Analysis`, pageWidth / 2, yPos, { align: 'center' });
         yPos += 10;
         
-        // Add a line
         doc.setDrawColor(52, 152, 219);
         doc.setLineWidth(0.5);
         doc.line(margin, yPos - 2, pageWidth - margin, yPos - 2);
         yPos += 5;
         
-        // ========== DATE AND GENERATION INFO ==========
         doc.setFontSize(10);
         doc.setTextColor(127, 140, 141);
         const now = new Date();
         doc.text(`Generated on: ${formatDateForPDF(now)}`, margin, yPos);
         yPos += 5;
         
-        // Get cashier name
         const cashierName = document.getElementById('sidebarUserName')?.textContent || 'Unknown';
         doc.text(`Generated by: ${cashierName}`, margin, yPos);
         yPos += 5;
@@ -2991,34 +3495,32 @@ async function downloadReportPDF() {
         doc.text(`Report Period: ${reportPeriod}`, margin, yPos);
         yPos += 10;
         
-        // ========== EXECUTIVE SUMMARY ==========
         doc.setFontSize(14);
         doc.setTextColor(44, 62, 80);
         doc.setFont('helvetica', 'bold');
         doc.text('Executive Summary', margin, yPos);
         yPos += 7;
         
-        // Create summary box
         doc.setFillColor(248, 249, 250);
         doc.setDrawColor(222, 226, 230);
-        doc.roundedRect(margin, yPos - 2, pageWidth - (margin * 2), 30, 3, 3, 'FD');
+        doc.roundedRect(margin, yPos - 2, pageWidth - (margin * 2), 40, 3, 3, 'FD');
         
         doc.setFontSize(11);
         doc.setTextColor(44, 62, 80);
         doc.setFont('helvetica', 'normal');
-        doc.text(`Total Sales: ₱${totalSales.toFixed(2)}`, margin + 5, yPos + 5);
-        doc.text(`Number of Transactions: ${transactions}`, margin + 5, yPos + 12);
-        doc.text(`Average Sale per Transaction: ₱${averageSale.toFixed(2)}`, margin + 5, yPos + 19);
-        yPos += 35;
+        doc.text(`Gross Sales: ₱${(totalSales + (exchangeData.totalExchangeAdjustments > 0 ? exchangeData.totalExchangeAdjustments : 0)).toFixed(2)}`, margin + 5, yPos + 5);
+        doc.text(`Exchange Adjustments: ${exchangeData.totalExchangeAdjustments >= 0 ? '+' : ''}₱${exchangeData.totalExchangeAdjustments.toFixed(2)}`, margin + 5, yPos + 12);
+        doc.text(`Net Sales: ₱${(totalSales + exchangeData.totalExchangeAdjustments).toFixed(2)}`, margin + 5, yPos + 19);
+        doc.text(`Number of Transactions: ${transactions}`, margin + 5, yPos + 26);
+        doc.text(`Average Sale per Transaction: ₱${averageSale.toFixed(2)}`, margin + 5, yPos + 33);
+        yPos += 45;
         
-        // ========== SALES CHART ==========
         doc.setFontSize(14);
         doc.setTextColor(44, 62, 80);
         doc.setFont('helvetica', 'bold');
         doc.text('Sales Visualization', margin, yPos);
         yPos += 7;
         
-        // Add chart as image
         try {
             const chartImage = chartCanvas.toDataURL('image/png');
             doc.addImage(chartImage, 'PNG', margin, yPos, pageWidth - (margin * 2), 70);
@@ -3031,7 +3533,23 @@ async function downloadReportPDF() {
             yPos += 20;
         }
         
-        // ========== DAILY/PERIOD BREAKDOWN ==========
+        if (exchangeData.count > 0) {
+            doc.setFontSize(14);
+            doc.setTextColor(44, 62, 80);
+            doc.setFont('helvetica', 'bold');
+            doc.text('Exchange Summary', margin, yPos);
+            yPos += 7;
+            
+            doc.setFontSize(11);
+            doc.setTextColor(44, 62, 80);
+            doc.text(`Total Exchanges: ${exchangeData.count}`, margin, yPos);
+            yPos += 5;
+            doc.text(`Total Items Exchanged: ${exchangeData.totalItems}`, margin, yPos);
+            yPos += 5;
+            doc.text(`Net Exchange Adjustment: ${exchangeData.totalExchangeAdjustments >= 0 ? '+' : ''}₱${exchangeData.totalExchangeAdjustments.toFixed(2)}`, margin, yPos);
+            yPos += 10;
+        }
+        
         if (salesData.labels && salesData.labels.length > 0) {
             doc.setFontSize(14);
             doc.setTextColor(44, 62, 80);
@@ -3039,7 +3557,6 @@ async function downloadReportPDF() {
             doc.text('Period Breakdown', margin, yPos);
             yPos += 7;
             
-            // Prepare breakdown table
             const breakdownColumn = ["Date/Period", "Sales (₱)", "Transactions", "Average"];
             const breakdownRows = [];
             
@@ -3083,13 +3600,11 @@ async function downloadReportPDF() {
             yPos = doc.lastAutoTable.finalY + 10;
         }
         
-        // Check if we need a new page
         if (yPos > 250) {
             doc.addPage();
             yPos = 20;
         }
         
-        // ========== PRODUCT SALES BREAKDOWN ==========
         if (productSalesData.length > 0) {
             doc.setFontSize(16);
             doc.setTextColor(44, 62, 80);
@@ -3097,7 +3612,6 @@ async function downloadReportPDF() {
             doc.text('Product Sales Breakdown', margin, yPos);
             yPos += 7;
             
-            // Add summary
             const totalItemsSold = productSalesData.reduce((sum, p) => sum + p.quantity, 0);
             const totalRevenue = productSalesData.reduce((sum, p) => sum + p.revenue, 0);
             
@@ -3106,11 +3620,9 @@ async function downloadReportPDF() {
             doc.text(`Total Items Sold: ${totalItemsSold} pcs | Total Revenue: ₱${totalRevenue.toFixed(2)}`, margin, yPos);
             yPos += 7;
             
-            // Prepare product sales table
             const productTableColumn = ["Product Name", "Qty Sold", "Revenue (₱)", "% of Total"];
             const productTableRows = [];
             
-            // Calculate percentages based on revenue
             productSalesData.forEach(product => {
                 const percentage = totalRevenue > 0 ? ((product.revenue / totalRevenue) * 100).toFixed(1) : 0;
                 productTableRows.push([
@@ -3121,13 +3633,11 @@ async function downloadReportPDF() {
                 ]);
             });
             
-            // Add top products note
             doc.setFontSize(9);
             doc.setTextColor(52, 152, 219);
             doc.text(`Top 3 Products by Revenue:`, margin, yPos);
             yPos += 5;
             
-            // Show top 3
             const topProducts = [...productSalesData].sort((a, b) => b.revenue - a.revenue).slice(0, 3);
             topProducts.forEach((product, index) => {
                 doc.setFontSize(9);
@@ -3138,7 +3648,6 @@ async function downloadReportPDF() {
             
             yPos += 3;
             
-            // Full product table
             doc.autoTable({
                 head: [productTableColumn],
                 body: productTableRows,
@@ -3165,132 +3674,10 @@ async function downloadReportPDF() {
             yPos = doc.lastAutoTable.finalY + 10;
         }
         
-        // Check if we need a new page for payment methods
-        if (yPos > 250) {
-            doc.addPage();
-            yPos = 20;
-        }
-        
-        // ========== PAYMENT METHOD BREAKDOWN ==========
-        const paymentMethodData = await getPaymentMethodData(selectedMonth, selectedYear);
-        
-        if (paymentMethodData.length > 0) {
-            doc.setFontSize(14);
-            doc.setTextColor(44, 62, 80);
-            doc.setFont('helvetica', 'bold');
-            doc.text('Payment Method Analysis', margin, yPos);
-            yPos += 7;
-            
-            const paymentColumn = ["Payment Method", "Transactions", "Total (₱)", "Average"];
-            const paymentRows = [];
-            
-            paymentMethodData.forEach(method => {
-                paymentRows.push([
-                    method.method,
-                    method.count.toString(),
-                    method.total.toFixed(2),
-                    (method.total / method.count).toFixed(2)
-                ]);
-            });
-            
-            doc.autoTable({
-                head: [paymentColumn],
-                body: paymentRows,
-                startY: yPos,
-                theme: 'striped',
-                headStyles: {
-                    fillColor: [46, 204, 113],
-                    textColor: [255, 255, 255],
-                    fontStyle: 'bold',
-                    fontSize: 10
-                },
-                bodyStyles: {
-                    fontSize: 9
-                },
-                columnStyles: {
-                    0: { cellWidth: 40 },
-                    1: { cellWidth: 30, halign: 'center' },
-                    2: { cellWidth: 40, halign: 'right' },
-                    3: { cellWidth: 40, halign: 'right' }
-                },
-                margin: { left: margin, right: margin }
-            });
-            
-            yPos = doc.lastAutoTable.finalY + 10;
-        }
-        
-        // ========== DISCOUNT ANALYSIS ==========
-        const discountData = await getDiscountData(selectedMonth, selectedYear);
-        
-        if (discountData.totalDiscounts > 0) {
-            // Check if we need a new page
-            if (yPos > 230) {
-                doc.addPage();
-                yPos = 20;
-            }
-            
-            doc.setFontSize(14);
-            doc.setTextColor(44, 62, 80);
-            doc.setFont('helvetica', 'bold');
-            doc.text('Discount Analysis', margin, yPos);
-            yPos += 7;
-            
-            doc.setFontSize(11);
-            doc.setTextColor(44, 62, 80);
-            doc.text(`Total Discounts Given: ₱${discountData.totalDiscounts.toFixed(2)}`, margin, yPos);
-            yPos += 5;
-            doc.text(`Transactions with Discount: ${discountData.discountedTransactions}`, margin, yPos);
-            yPos += 5;
-            doc.text(`Average Discount per Transaction: ₱${(discountData.totalDiscounts / (discountData.discountedTransactions || 1)).toFixed(2)}`, margin, yPos);
-            yPos += 10;
-            
-            if (discountData.breakdown.length > 0) {
-                const discountColumn = ["Discount Type", "Count", "Total Discount (₱)"];
-                const discountRows = discountData.breakdown.map(item => [
-                    item.type,
-                    item.count.toString(),
-                    item.total.toFixed(2)
-                ]);
-                
-                doc.autoTable({
-                    head: [discountColumn],
-                    body: discountRows,
-                    startY: yPos,
-                    theme: 'striped',
-                    headStyles: {
-                        fillColor: [155, 89, 182],
-                        textColor: [255, 255, 255],
-                        fontStyle: 'bold',
-                        fontSize: 10
-                    },
-                    bodyStyles: {
-                        fontSize: 9
-                    },
-                    columnStyles: {
-                        0: { cellWidth: 60 },
-                        1: { cellWidth: 30, halign: 'center' },
-                        2: { cellWidth: 50, halign: 'right' }
-                    },
-                    margin: { left: margin, right: margin }
-                });
-                
-                yPos = doc.lastAutoTable.finalY + 10;
-            }
-        }
-        
-        // ========== SUMMARY STATISTICS CARD ==========
-        // Check if we need a new page
-        if (yPos > 250) {
-            doc.addPage();
-            yPos = 20;
-        }
-        
-        // Add footer on each page
         const pageCount = doc.internal.getNumberOfPages();
         for (let i = 1; i <= pageCount; i++) {
             doc.setPage(i);
             
-            // Add footer line
             doc.setDrawColor(52, 152, 219);
             doc.setLineWidth(0.5);
             doc.line(margin, doc.internal.pageSize.height - 15, pageWidth - margin, doc.internal.pageSize.height - 15);
@@ -3309,7 +3696,6 @@ async function downloadReportPDF() {
                 doc.internal.pageSize.height - 10
             );
             
-            // Add timestamp at bottom
             doc.text(
                 `Report generated on ${formatDateForPDF(now)}`,
                 pageWidth / 2,
@@ -3318,7 +3704,6 @@ async function downloadReportPDF() {
             );
         }
         
-        // Save PDF
         const fileName = `comprehensive_report_${monthNames[selectedMonth]}_${selectedYear}_${formatDateForFileName(now)}.pdf`;
         doc.save(fileName);
         
@@ -3330,7 +3715,48 @@ async function downloadReportPDF() {
     }
 }
 
-// Helper function to get detailed sales data for the period
+async function getExchangeData(selectedMonth, selectedYear) {
+    try {
+        const startDate = new Date(selectedYear, selectedMonth, 1);
+        startDate.setHours(0, 0, 0, 0);
+        
+        const endDate = new Date(selectedYear, selectedMonth + 1, 1);
+        endDate.setHours(0, 0, 0, 0);
+        
+        const exchangesQuery = query(
+            collection(db, "exchanges"),
+            where("date", ">=", Timestamp.fromDate(startDate)),
+            where("date", "<", Timestamp.fromDate(endDate))
+        );
+        
+        const exchangesSnapshot = await getDocs(exchangesQuery);
+        
+        let totalExchangeAdjustments = 0;
+        let totalItems = 0;
+        let count = 0;
+        
+        exchangesSnapshot.forEach(doc => {
+            const exchange = doc.data();
+            totalExchangeAdjustments += exchange.priceDifference || 0;
+            totalItems += exchange.quantity || 0;
+            count++;
+        });
+        
+        return {
+            count,
+            totalItems,
+            totalExchangeAdjustments
+        };
+    } catch (error) {
+        console.error("Error getting exchange data:", error);
+        return {
+            count: 0,
+            totalItems: 0,
+            totalExchangeAdjustments: 0
+        };
+    }
+}
+
 async function getDetailedSalesData(selectedMonth, selectedYear) {
     try {
         const period = document.getElementById('reportPeriod')?.value || 'daily';
@@ -3402,114 +3828,14 @@ async function getDetailedSalesData(selectedMonth, selectedYear) {
     }
 }
 
-// Helper function to get payment method data
-async function getPaymentMethodData(selectedMonth, selectedYear) {
-    try {
-        const startDate = new Date(selectedYear, selectedMonth, 1);
-        startDate.setHours(0, 0, 0, 0);
-        
-        const endDate = new Date(selectedYear, selectedMonth + 1, 1);
-        endDate.setHours(0, 0, 0, 0);
-        
-        const salesQuery = query(
-            collection(db, "sales"),
-            where("date", ">=", Timestamp.fromDate(startDate)),
-            where("date", "<", Timestamp.fromDate(endDate))
-        );
-        
-        const salesSnapshot = await getDocs(salesQuery);
-        const paymentMethods = {};
-        
-        salesSnapshot.forEach(doc => {
-            const sale = doc.data();
-            const method = sale.paymentMethod || 'Cash';
-            
-            if (!paymentMethods[method]) {
-                paymentMethods[method] = {
-                    method: method,
-                    count: 0,
-                    total: 0
-                };
-            }
-            paymentMethods[method].count++;
-            paymentMethods[method].total += sale.total || 0;
-        });
-        
-        return Object.values(paymentMethods);
-    } catch (error) {
-        console.error("Error getting payment method data:", error);
-        return [];
-    }
-}
-
-// Helper function to get discount data
-async function getDiscountData(selectedMonth, selectedYear) {
-    try {
-        const startDate = new Date(selectedYear, selectedMonth, 1);
-        startDate.setHours(0, 0, 0, 0);
-        
-        const endDate = new Date(selectedYear, selectedMonth + 1, 1);
-        endDate.setHours(0, 0, 0, 0);
-        
-        const salesQuery = query(
-            collection(db, "sales"),
-            where("date", ">=", Timestamp.fromDate(startDate)),
-            where("date", "<", Timestamp.fromDate(endDate))
-        );
-        
-        const salesSnapshot = await getDocs(salesQuery);
-        let totalDiscounts = 0;
-        let discountedTransactions = 0;
-        const breakdown = [];
-        
-        salesSnapshot.forEach(doc => {
-            const sale = doc.data();
-            const discountAmount = sale.discountAmount || 0;
-            const discountPercentage = sale.discountPercentage || 0;
-            
-            if (discountAmount > 0) {
-                totalDiscounts += discountAmount;
-                discountedTransactions++;
-                
-                let discountType = 'Other';
-                if (discountPercentage === 20) {
-                    discountType = 'Senior/PWD (20%)';
-                } else if (discountPercentage > 0) {
-                    discountType = `${discountPercentage}% Discount`;
-                }
-                
-                const existingType = breakdown.find(item => item.type === discountType);
-                if (existingType) {
-                    existingType.count++;
-                    existingType.total += discountAmount;
-                } else {
-                    breakdown.push({
-                        type: discountType,
-                        count: 1,
-                        total: discountAmount
-                    });
-                }
-            }
-        });
-        
-        return { totalDiscounts, discountedTransactions, breakdown };
-    } catch (error) {
-        console.error("Error getting discount data:", error);
-        return { totalDiscounts: 0, discountedTransactions: 0, breakdown: [] };
-    }
-}
-
-// Helper function to get product sales data for PDF
 async function getProductSalesData(selectedMonth, selectedYear) {
     try {
-        // Create date range for selected month
         const startDate = new Date(selectedYear, selectedMonth, 1);
         startDate.setHours(0, 0, 0, 0);
         
         const endDate = new Date(selectedYear, selectedMonth + 1, 1);
         endDate.setHours(0, 0, 0, 0);
         
-        // Get all sales for the selected month
         const salesQuery = query(
             collection(db, "sales"),
             where("date", ">=", Timestamp.fromDate(startDate)),
@@ -3518,7 +3844,6 @@ async function getProductSalesData(selectedMonth, selectedYear) {
         
         const salesSnapshot = await getDocs(salesQuery);
         
-        // Aggregate product sales
         const productSales = {};
         
         salesSnapshot.forEach(doc => {
@@ -3538,7 +3863,6 @@ async function getProductSalesData(selectedMonth, selectedYear) {
             }
         });
         
-        // Convert to array and sort by quantity sold
         const productSalesArray = Object.entries(productSales).map(([name, data]) => ({
             name,
             quantity: data.quantity,
@@ -3555,7 +3879,6 @@ async function getProductSalesData(selectedMonth, selectedYear) {
     }
 }
 
-// Helper function to format date for PDF
 function formatDateForPDF(date) {
     return date.toLocaleDateString('en-US', {
         year: 'numeric',
@@ -3567,7 +3890,6 @@ function formatDateForPDF(date) {
     });
 }
 
-// Helper function to format date for filename
 function formatDateForFileName(date) {
     const year = date.getFullYear();
     const month = (date.getMonth() + 1).toString().padStart(2, '0');
@@ -3579,65 +3901,52 @@ function formatDateForFileName(date) {
 
 // ========== REPORTS FUNCTIONALITY ==========
 
-// Load Reports Tab
 async function loadReportsTab() {
     try {
         console.log("Loading reports tab...");
         
-        // Populate year dropdown
         populateYearDropdown();
         
-        // Set current month as default
         const today = new Date();
         document.getElementById('reportMonth').value = today.getMonth().toString();
         
-        // Set up report period selector
         const reportPeriod = document.getElementById('reportPeriod');
         if (reportPeriod) {
-            // Remove existing listeners
             const newReportPeriod = reportPeriod.cloneNode(true);
             reportPeriod.parentNode.replaceChild(newReportPeriod, reportPeriod);
-            
             newReportPeriod.addEventListener('change', () => {
                 generateReport();
             });
         }
         
-        // Set up month selector
         const reportMonth = document.getElementById('reportMonth');
         if (reportMonth) {
             const newReportMonth = reportMonth.cloneNode(true);
             reportMonth.parentNode.replaceChild(newReportMonth, reportMonth);
-            
             newReportMonth.addEventListener('change', () => {
                 generateReport();
             });
         }
         
-        // Set up year selector
         const reportYear = document.getElementById('reportYear');
         if (reportYear) {
             const newReportYear = reportYear.cloneNode(true);
             reportYear.parentNode.replaceChild(newReportYear, reportYear);
-            
             newReportYear.addEventListener('change', () => {
                 generateReport();
             });
         }
         
-        // Set up generate report button
         const generateBtn = document.getElementById('generateReportBtn');
         if (generateBtn) {
             const newGenerateBtn = generateBtn.cloneNode(true);
             generateBtn.parentNode.replaceChild(newGenerateBtn, generateBtn);
-            
             newGenerateBtn.addEventListener('click', (e) => {
                 e.preventDefault();
                 generateReport();
             });
         }
         
-        // Generate report with current selections
         setTimeout(() => {
             generateReport();
         }, 500);
@@ -3648,17 +3957,14 @@ async function loadReportsTab() {
     }
 }
 
-// Populate year dropdown (last 5 years to next year)
 function populateYearDropdown() {
     const yearSelect = document.getElementById('reportYear');
     if (!yearSelect) return;
     
     const currentYear = new Date().getFullYear();
     
-    // Clear existing options
     yearSelect.innerHTML = '';
     
-    // Add last 5 years and next year
     for (let i = currentYear - 5; i <= currentYear + 1; i++) {
         const option = document.createElement('option');
         option.value = i;
@@ -3670,8 +3976,6 @@ function populateYearDropdown() {
     }
 }
 
-// Generate Report based on selected month and year
-// Generate Report based on selected month and year (with refund handling)
 async function generateReport() {
     try {
         console.log("Generating report...");
@@ -3685,13 +3989,11 @@ async function generateReport() {
             return;
         }
         
-        // Show loading state
         reportContent.innerHTML = '<div class="loading">Generating report...</div>';
         if (reportSummary) {
             reportSummary.innerHTML = '';
         }
         
-        // Get selected values
         const selectedMonth = parseInt(document.getElementById('reportMonth')?.value || new Date().getMonth());
         const selectedYear = parseInt(document.getElementById('reportYear')?.value || new Date().getFullYear());
         const period = document.getElementById('reportPeriod')?.value || 'daily';
@@ -3702,17 +4004,14 @@ async function generateReport() {
         let data = [];
         let totalSales = 0;
         let totalTransactions = 0;
-        let totalRefunds = 0;
         let averageSale = 0;
         
-        // Create date range for selected month
         const startDate = new Date(selectedYear, selectedMonth, 1);
         startDate.setHours(0, 0, 0, 0);
         
         const endDate = new Date(selectedYear, selectedMonth + 1, 1);
         endDate.setHours(0, 0, 0, 0);
         
-        // Get all sales for the selected month
         const salesQuery = query(
             collection(db, "sales"),
             where("date", ">=", Timestamp.fromDate(startDate)),
@@ -3720,78 +4019,43 @@ async function generateReport() {
             orderBy("date", "asc")
         );
         
-        // Get all returns for the selected month
-        const returnsQuery = query(
-            collection(db, "returns"),
-            where("date", ">=", Timestamp.fromDate(startDate)),
-            where("date", "<", Timestamp.fromDate(endDate))
-        );
+        const salesSnapshot = await getDocs(salesQuery);
         
-        const [salesSnapshot, returnsSnapshot] = await Promise.all([
-            getDocs(salesQuery),
-            getDocs(returnsQuery)
-        ]);
-        
-        console.log(`Found ${salesSnapshot.size} sales and ${returnsSnapshot.size} returns for this period`);
-        
-        // Calculate total refunds
-        returnsSnapshot.forEach(doc => {
-            totalRefunds += doc.data().amount || 0;
-        });
+        console.log(`Found ${salesSnapshot.size} sales for this period`);
         
         const sales = [];
         salesSnapshot.forEach(doc => {
             sales.push({ id: doc.id, ...doc.data() });
         });
         
-        // Process data based on period
         switch(period) {
             case 'daily':
-                // Group by day of month
                 const daysInMonth = new Date(selectedYear, selectedMonth + 1, 0).getDate();
                 const dailyData = new Array(daysInMonth).fill(0);
                 const dailyCount = new Array(daysInMonth).fill(0);
-                const dailyRefunds = new Array(daysInMonth).fill(0);
                 
-                // Process sales
                 sales.forEach(sale => {
                     const saleDate = sale.date.toDate();
-                    const day = saleDate.getDate() - 1; // 0-based index
+                    const day = saleDate.getDate() - 1;
                     if (day >= 0 && day < daysInMonth) {
                         dailyData[day] += sale.total || 0;
                         dailyCount[day]++;
                     }
                 });
                 
-                // Process refunds
-                returnsSnapshot.forEach(doc => {
-                    const refund = doc.data();
-                    const refundDate = refund.date.toDate();
-                    const day = refundDate.getDate() - 1;
-                    if (day >= 0 && day < daysInMonth) {
-                        dailyRefunds[day] += refund.amount || 0;
-                    }
-                });
-                
-                // Calculate net sales (sales - refunds)
-                const netDailyData = dailyData.map((sale, index) => sale - dailyRefunds[index]);
-                
-                // Create labels (1, 2, 3...)
                 labels = [];
                 for (let i = 1; i <= daysInMonth; i++) {
                     labels.push(`${i}`);
                 }
-                data = netDailyData;
-                totalSales = netDailyData.reduce((sum, val) => sum + val, 0);
+                data = dailyData;
+                totalSales = dailyData.reduce((sum, val) => sum + val, 0);
                 totalTransactions = dailyCount.reduce((sum, val) => sum + val, 0);
                 break;
                 
             case 'weekly':
-                // Group by week
-                const weeksInMonth = 5; // Max weeks in a month
+                const weeksInMonth = 5;
                 const weeklyData = new Array(weeksInMonth).fill(0);
                 const weeklyCount = new Array(weeksInMonth).fill(0);
-                const weeklyRefunds = new Array(weeksInMonth).fill(0);
                 
                 sales.forEach(sale => {
                     const saleDate = sale.date.toDate();
@@ -3803,31 +4067,17 @@ async function generateReport() {
                     }
                 });
                 
-                returnsSnapshot.forEach(doc => {
-                    const refund = doc.data();
-                    const refundDate = refund.date.toDate();
-                    const dayOfMonth = refundDate.getDate();
-                    const weekIndex = Math.floor((dayOfMonth - 1) / 7);
-                    if (weekIndex < weeksInMonth) {
-                        weeklyRefunds[weekIndex] += refund.amount || 0;
-                    }
-                });
-                
-                const netWeeklyData = weeklyData.map((sale, index) => sale - weeklyRefunds[index]);
-                
                 labels = ['Week 1', 'Week 2', 'Week 3', 'Week 4', 'Week 5'];
-                data = netWeeklyData;
-                totalSales = netWeeklyData.reduce((sum, val) => sum + val, 0);
+                data = weeklyData;
+                totalSales = weeklyData.reduce((sum, val) => sum + val, 0);
                 totalTransactions = weeklyCount.reduce((sum, val) => sum + val, 0);
                 break;
                 
             case 'monthly':
-                // Show last 6 months including selected month
                 labels = [];
                 data = [];
                 const monthlyData = [];
                 const monthlyCount = [];
-                const monthlyRefunds = [];
                 
                 for (let i = 5; i >= 0; i--) {
                     const monthDate = new Date(selectedYear, selectedMonth - i, 1);
@@ -3837,28 +4087,16 @@ async function generateReport() {
                     const monthEnd = new Date(monthDate.getFullYear(), monthDate.getMonth() + 1, 1);
                     monthEnd.setHours(0, 0, 0, 0);
                     
-                    // Get sales for this month
                     const monthSalesQuery = query(
                         collection(db, "sales"),
                         where("date", ">=", Timestamp.fromDate(monthStart)),
                         where("date", "<", Timestamp.fromDate(monthEnd))
                     );
                     
-                    // Get returns for this month
-                    const monthReturnsQuery = query(
-                        collection(db, "returns"),
-                        where("date", ">=", Timestamp.fromDate(monthStart)),
-                        where("date", "<", Timestamp.fromDate(monthEnd))
-                    );
-                    
-                    const [monthSalesSnapshot, monthReturnsSnapshot] = await Promise.all([
-                        getDocs(monthSalesQuery),
-                        getDocs(monthReturnsQuery)
-                    ]);
+                    const monthSalesSnapshot = await getDocs(monthSalesQuery);
                     
                     let monthTotal = 0;
                     let monthCount = 0;
-                    let monthRefund = 0;
                     
                     monthSalesSnapshot.forEach(doc => {
                         const sale = doc.data();
@@ -3866,32 +4104,21 @@ async function generateReport() {
                         monthCount++;
                     });
                     
-                    monthReturnsSnapshot.forEach(doc => {
-                        const refund = doc.data();
-                        monthRefund += refund.amount || 0;
-                    });
-                    
-                    const netMonthTotal = monthTotal - monthRefund;
-                    
                     labels.push(monthDate.toLocaleDateString('en-US', { month: 'short', year: 'numeric' }));
-                    data.push(netMonthTotal);
-                    monthlyData.push(netMonthTotal);
+                    data.push(monthTotal);
+                    monthlyData.push(monthTotal);
                     monthlyCount.push(monthCount);
-                    monthlyRefunds.push(monthRefund);
                 }
                 
                 totalSales = monthlyData.reduce((sum, val) => sum + val, 0);
                 totalTransactions = monthlyCount.reduce((sum, val) => sum + val, 0);
-                totalRefunds = monthlyRefunds.reduce((sum, val) => sum + val, 0);
                 break;
         }
         
         averageSale = totalTransactions > 0 ? totalSales / totalTransactions : 0;
         
-        // Display report with refund information
-        displayFixedReport(period, labels, data, totalSales, totalTransactions, averageSale, selectedMonth, selectedYear, totalRefunds);
+        displayReport(period, labels, data, totalSales, totalTransactions, averageSale, selectedMonth, selectedYear);
         
-        // Now get product sales breakdown (with refund adjustments)
         await loadProductSalesBreakdown(selectedMonth, selectedYear);
         
     } catch (error) {
@@ -3904,46 +4131,28 @@ async function generateReport() {
     }
 }
 
-// Load Product Sales Breakdown
-// Load Product Sales Breakdown with refund adjustments
 async function loadProductSalesBreakdown(selectedMonth, selectedYear) {
     try {
         const productSalesContainer = document.getElementById('productSalesBreakdown');
         if (!productSalesContainer) return;
         
-        // Create date range for selected month
         const startDate = new Date(selectedYear, selectedMonth, 1);
         startDate.setHours(0, 0, 0, 0);
         
         const endDate = new Date(selectedYear, selectedMonth + 1, 1);
         endDate.setHours(0, 0, 0, 0);
         
-        // Get all sales for the selected month
         const salesQuery = query(
             collection(db, "sales"),
             where("date", ">=", Timestamp.fromDate(startDate)),
             where("date", "<", Timestamp.fromDate(endDate))
         );
         
-        // Get all returns for the selected month
-        const returnsQuery = query(
-            collection(db, "returns"),
-            where("date", ">=", Timestamp.fromDate(startDate)),
-            where("date", "<", Timestamp.fromDate(endDate))
-        );
+        const salesSnapshot = await getDocs(salesQuery);
         
-        const [salesSnapshot, returnsSnapshot] = await Promise.all([
-            getDocs(salesQuery),
-            getDocs(returnsQuery)
-        ]);
-        
-        // Aggregate product sales
         const productSales = {};
-        const productRefunds = {};
         let totalItemsSold = 0;
-        let totalRefundedItems = 0;
         
-        // Process sales
         salesSnapshot.forEach(doc => {
             const sale = doc.data();
             if (sale.items && Array.isArray(sale.items)) {
@@ -3952,58 +4161,25 @@ async function loadProductSalesBreakdown(selectedMonth, selectedYear) {
                     if (!productSales[productName]) {
                         productSales[productName] = {
                             quantity: 0,
-                            revenue: 0,
-                            productId: item.productId || 'unknown'
+                            revenue: 0
                         };
                     }
                     productSales[productName].quantity += item.quantity || 0;
                     productSales[productName].revenue += (item.price * item.quantity) || 0;
+                    totalItemsSold += item.quantity || 0;
                 });
             }
         });
         
-        // Process refunds
-        returnsSnapshot.forEach(doc => {
-            const refund = doc.data();
-            const productName = refund.productName || 'Unknown Product';
-            
-            if (!productRefunds[productName]) {
-                productRefunds[productName] = {
-                    quantity: 0,
-                    amount: 0
-                };
-            }
-            productRefunds[productName].quantity += refund.quantity || 0;
-            productRefunds[productName].amount += refund.amount || 0;
-            totalRefundedItems += refund.quantity || 0;
-        });
+        const netProductSales = Object.entries(productSales).map(([name, data]) => ({
+            name: name,
+            quantity: data.quantity,
+            revenue: data.revenue
+        }));
         
-        // Calculate net sales (sales - refunds)
-        const netProductSales = [];
-        for (const [name, saleData] of Object.entries(productSales)) {
-            const refundData = productRefunds[name] || { quantity: 0, amount: 0 };
-            const netQuantity = saleData.quantity - refundData.quantity;
-            const netRevenue = saleData.revenue - refundData.amount;
-            
-            if (netQuantity > 0 || netRevenue > 0) {
-                netProductSales.push({
-                    name: name,
-                    quantity: netQuantity,
-                    revenue: netRevenue,
-                    originalQuantity: saleData.quantity,
-                    refundedQuantity: refundData.quantity,
-                    refundedAmount: refundData.amount
-                });
-            }
-            
-            totalItemsSold += netQuantity;
-        }
-        
-        // Sort by net quantity sold (descending)
         netProductSales.sort((a, b) => b.quantity - a.quantity);
         
-        // Display product sales breakdown with refund information
-        displayProductSalesBreakdown(netProductSales, totalItemsSold, totalRefundedItems);
+        displayProductSalesBreakdown(netProductSales, totalItemsSold);
         
     } catch (error) {
         console.error("Error loading product sales breakdown:", error);
@@ -4014,7 +4190,6 @@ async function loadProductSalesBreakdown(selectedMonth, selectedYear) {
     }
 }
 
-// Display Product Sales Breakdown
 function displayProductSalesBreakdown(productSales, totalItemsSold) {
     const container = document.getElementById('productSalesBreakdown');
     if (!container) return;
@@ -4063,9 +4238,7 @@ function displayProductSalesBreakdown(productSales, totalItemsSold) {
     container.innerHTML = html;
 }
 
-// Display report with chart
-// Display report with chart and refund info
-function displayFixedReport(period, labels, data, totalSales, totalTransactions, averageSale, selectedMonth, selectedYear, totalRefunds = 0) {
+function displayReport(period, labels, data, totalSales, totalTransactions, averageSale, selectedMonth, selectedYear) {
     const reportContent = document.getElementById('reportStats');
     const reportSummary = document.getElementById('reportSummary');
     const chartCanvas = document.getElementById('reportChart');
@@ -4075,7 +4248,6 @@ function displayFixedReport(period, labels, data, totalSales, totalTransactions,
     const monthNames = ['January', 'February', 'March', 'April', 'May', 'June', 
                         'July', 'August', 'September', 'October', 'November', 'December'];
     
-    // Update stats with refund information
     reportContent.innerHTML = `
         <div class="stats-grid">
             <div class="stat-card">
@@ -4083,7 +4255,7 @@ function displayFixedReport(period, labels, data, totalSales, totalTransactions,
                     <i class="fas fa-chart-line"></i>
                 </div>
                 <div class="stat-info">
-                    <h3>Net Sales</h3>
+                    <h3>Total Sales</h3>
                     <p>₱${totalSales.toFixed(2)}</p>
                 </div>
             </div>
@@ -4105,53 +4277,30 @@ function displayFixedReport(period, labels, data, totalSales, totalTransactions,
                     <p>₱${averageSale.toFixed(2)}</p>
                 </div>
             </div>
-            ${totalRefunds > 0 ? `
-            <div class="stat-card refund-stat">
-                <div class="stat-icon" style="background: #e74c3c;">
-                    <i class="fas fa-undo-alt"></i>
-                </div>
-                <div class="stat-info">
-                    <h3>Total Refunds</h3>
-                    <p style="color: #e74c3c;">-₱${totalRefunds.toFixed(2)}</p>
-                </div>
-            </div>
-            ` : ''}
         </div>
     `;
     
-    // Add summary with refund note
     if (reportSummary) {
-        const grossSales = totalSales + totalRefunds;
         reportSummary.innerHTML = `
             <div class="report-period-info">
                 <h3>Report Period: ${monthNames[selectedMonth]} ${selectedYear}</h3>
-                <p>Showing ${period} net sales data for the selected period.</p>
-                ${totalRefunds > 0 ? `
-                <div class="refund-summary">
-                    <p><strong>Gross Sales:</strong> ₱${grossSales.toFixed(2)}</p>
-                    <p><strong>Total Refunds:</strong> <span style="color: #e74c3c;">-₱${totalRefunds.toFixed(2)}</span></p>
-                    <p><strong>Net Sales:</strong> ₱${totalSales.toFixed(2)}</p>
-                </div>
-                ` : ''}
+                <p>Showing ${period} sales data for the selected period.</p>
             </div>
         `;
     }
     
-    // Destroy previous chart if exists
     if (window.reportChartInstance) {
         window.reportChartInstance.destroy();
     }
     
-    // Create new chart with tooltip showing refund info
     const ctx = chartCanvas.getContext('2d');
     
-    // Chart configuration
     const chartConfig = {
         type: 'bar',
         data: {
             labels: labels,
             datasets: [{
-                label: period === 'daily' ? 'Net Daily Sales' : (period === 'weekly' ? 'Net Weekly Sales' : 'Net Monthly Sales'),
+                label: period === 'daily' ? 'Daily Sales' : (period === 'weekly' ? 'Weekly Sales' : 'Monthly Sales'),
                 data: data,
                 backgroundColor: 'rgba(52, 152, 219, 0.7)',
                 borderColor: 'rgba(52, 152, 219, 1)',
@@ -4166,18 +4315,10 @@ function displayFixedReport(period, labels, data, totalSales, totalTransactions,
             plugins: {
                 title: {
                     display: true,
-                    text: `${monthNames[selectedMonth]} ${selectedYear} - Net ${period.charAt(0).toUpperCase() + period.slice(1)} Sales Report`,
+                    text: `${monthNames[selectedMonth]} ${selectedYear} - ${period.charAt(0).toUpperCase() + period.slice(1)} Sales Report`,
                     font: {
                         size: 16,
                         weight: 'bold'
-                    }
-                },
-                subtitle: {
-                    display: totalRefunds > 0,
-                    text: `(Refunds: ₱${totalRefunds.toFixed(2)})`,
-                    color: '#e74c3c',
-                    font: {
-                        size: 12
                     }
                 },
                 legend: {
@@ -4220,7 +4361,6 @@ function displayFixedReport(period, labels, data, totalSales, totalTransactions,
         }
     };
     
-    // Create new chart instance
     try {
         window.reportChartInstance = new Chart(ctx, chartConfig);
         console.log("Chart created successfully");
@@ -4229,78 +4369,268 @@ function displayFixedReport(period, labels, data, totalSales, totalTransactions,
     }
 }
 
-// Add Product Modal
-const modal = document.getElementById('productModal');
+// ===== PRODUCT MODAL =====
+const productModal = document.getElementById('productModal');
 const addProductBtn = document.getElementById('addProductBtn');
-const closeBtn = document.querySelector('.close');
+const productCloseBtn = document.querySelector('#productModal .close');
 
-if (addProductBtn && modal) {
+// Keep only this close button handler for the product modal
+if (productCloseBtn && productModal) {
+    productCloseBtn.addEventListener('click', () => {
+        productModal.style.display = 'none';
+    });
+}
+
+if (productModal) {
+    window.addEventListener('click', (e) => {
+        if (e.target === productModal) {
+            productModal.style.display = 'none';
+        }
+    });
+}
+
+// Product Type Selection Modal Logic
+const productTypeModal = document.getElementById('productTypeModal');
+const selectExistingBtn = document.getElementById('selectExistingProduct');
+const addNewBtn = document.getElementById('addNewProduct');
+const existingProductSearch = document.getElementById('existingProductSearch');
+const existingProductResults = document.getElementById('existingProductResults');
+const selectedProductInfo = document.getElementById('selectedProductInfo');
+const confirmAddStockBtn = document.getElementById('confirmAddStockBtn');
+
+// Show product type modal when Add Product button is clicked
+if (addProductBtn) {
     addProductBtn.addEventListener('click', () => {
-        // Reset form for new product
+        productTypeModal.style.display = 'block';
+    });
+}
+
+// Handle Add New Product selection
+if (addNewBtn) {
+    addNewBtn.addEventListener('click', () => {
+        // Close the type modal
+        productTypeModal.style.display = 'none';
+        
+        // Reset and show the add product form
         document.getElementById('productForm').reset();
         document.getElementById('productForm').dataset.editId = '';
+        
+        const discountableYes = document.getElementById('discountableYes');
+        if (discountableYes) {
+            discountableYes.checked = true;
+        }
+        
+        // Enable expiry date field for new products (but it will be used for batch creation)
+        document.getElementById('productExpiry').disabled = false;
+        document.getElementById('productExpiry').placeholder = 'Optional - will be used for first batch';
+        
         document.querySelector('#productModal .modal-header h2').textContent = 'Add New Product';
         const submitBtn = document.querySelector('#productForm button[type="submit"]');
         submitBtn.textContent = 'Add Product';
         
-        modal.style.display = 'block';
+        productModal.style.display = 'block';
     });
 }
 
-if (closeBtn && modal) {
-    closeBtn.addEventListener('click', () => {
-        modal.style.display = 'none';
+// Handle Add Existing Product selection
+if (selectExistingBtn) {
+    selectExistingBtn.addEventListener('click', () => {
+        productTypeModal.style.display = 'none';
+        document.getElementById('addExistingProductModal').style.display = 'block';
+        
+        // Clear previous selections
+        existingProductSearch.value = '';
+        existingProductResults.innerHTML = '';
+        selectedProductInfo.style.display = 'none';
+        selectedProductForStock = null;
     });
 }
 
-if (modal) {
-    window.addEventListener('click', (e) => {
-        if (e.target === modal) {
-            modal.style.display = 'none';
+// Search for existing products
+if (existingProductSearch) {
+    existingProductSearch.addEventListener('input', debounce(async (e) => {
+        const searchTerm = e.target.value.toLowerCase().trim();
+        
+        if (searchTerm.length < 2) {
+            existingProductResults.innerHTML = '';
+            return;
         }
-    });
-}
-
-// Close modal buttons for checkout
-const closeModalBtns = document.querySelectorAll('.modal .close');
-closeModalBtns.forEach(btn => {
-    btn.addEventListener('click', () => {
-        const modal = btn.closest('.modal');
-        if (modal) {
-            modal.style.display = 'none';
+        
+        existingProductResults.innerHTML = '<div style="text-align: center; padding: 20px;"><i class="fas fa-spinner fa-spin"></i> Searching...</div>';
+        
+        try {
+            const productsRef = collection(db, "products");
+            const productsSnapshot = await getDocs(productsRef);
+            
+            const results = [];
+            productsSnapshot.forEach(doc => {
+                const product = { id: doc.id, ...doc.data() };
+                if (product.name?.toLowerCase().includes(searchTerm) || 
+                    product.code?.toLowerCase().includes(searchTerm)) {
+                    results.push(product);
+                }
+            });
+            
+            if (results.length === 0) {
+                existingProductResults.innerHTML = '<div style="text-align: center; padding: 20px; color: #7f8c8d;">No products found</div>';
+                return;
+            }
+            
+            existingProductResults.innerHTML = '';
+            results.slice(0, 10).forEach(product => {
+                const resultDiv = document.createElement('div');
+                resultDiv.className = 'product-result-item';
+                resultDiv.dataset.productId = product.id;
+                
+                // Create the result item with your HTML structure
+                resultDiv.innerHTML = `
+                    <div class="product-result-name">${product.name}</div>
+                    <div class="product-result-details">
+                        <span class="product-result-code">Code: ${product.code || 'N/A'}</span>
+                        <span>Stock: ${product.stock || 0}</span>
+                        <span>Price: ₱${(product.price || 0).toFixed(2)}</span>
+                    </div>
+                `;
+                
+                resultDiv.addEventListener('click', () => selectProductForStock(product));
+                existingProductResults.appendChild(resultDiv);
+            });
+            
+        } catch (error) {
+            console.error("Error searching products:", error);
+            existingProductResults.innerHTML = '<div style="text-align: center; padding: 20px; color: #e74c3c;">Error searching products</div>';
         }
-    });
-});
-
-// Close dashboard modals
-const closeLowStockModal = document.querySelector('#lowStockModal .close');
-if (closeLowStockModal) {
-    closeLowStockModal.addEventListener('click', () => {
-        document.getElementById('lowStockModal').style.display = 'none';
-    });
+    }, 300));
 }
 
-const closeTodaySalesModal = document.querySelector('#todaySalesModal .close');
-if (closeTodaySalesModal) {
-    closeTodaySalesModal.addEventListener('click', () => {
-        document.getElementById('todaySalesModal').style.display = 'none';
-    });
-}
-
-// Close modals when clicking outside
-window.addEventListener('click', (e) => {
-    const lowStockModal = document.getElementById('lowStockModal');
-    const todaySalesModal = document.getElementById('todaySalesModal');
+function selectProductForStock(product) {
+    selectedProductForStock = product;
     
-    if (e.target === lowStockModal) {
-        lowStockModal.style.display = 'none';
+    // Remove selected class and reset background from all results
+    document.querySelectorAll('.product-result-item').forEach(item => {
+        item.classList.remove('selected');
+        item.style.backgroundColor = '';
+    });
+    
+    // Add selected class to clicked item
+    const selectedElement = Array.from(document.querySelectorAll('.product-result-item')).find(
+        el => el.dataset.productId === product.id
+    );
+    if (selectedElement) {
+        selectedElement.classList.add('selected');
+        selectedElement.style.backgroundColor = '#d4e6f1';
+        selectedElement.style.borderLeft = '3px solid #3498db';
     }
-    if (e.target === todaySalesModal) {
-        todaySalesModal.style.display = 'none';
-    }
-});
+    
+    // Update the selected product info
+    document.getElementById('selectedProductName').textContent = product.name;
+    document.getElementById('selectedCurrentStock').textContent = product.stock || 0;
+    document.getElementById('selectedProductPrice').textContent = (product.price || 0).toFixed(2);
+    
+    // Clear and enable stock and expiry fields
+    document.getElementById('addStockQuantity').value = 1;
+    document.getElementById('addStockQuantity').disabled = false;
+    
+    document.getElementById('newExpiryDate').value = '';
+    document.getElementById('newExpiryDate').disabled = false;
+    
+    // Show the selected product info section
+    selectedProductInfo.style.display = 'block';
+    
+    // Clear search results
+    existingProductResults.innerHTML = '';
+    
+    // Clear search input
+    existingProductSearch.value = '';
+}
 
-// Add Product Form Submit
+// Confirm add stock - UPDATED to create batches
+if (confirmAddStockBtn) {
+    confirmAddStockBtn.addEventListener('click', async () => {
+        if (!selectedProductForStock) {
+            showNotification('Please select a product', 'error');
+            return;
+        }
+        
+        const quantity = parseInt(document.getElementById('addStockQuantity').value);
+        const newExpiry = document.getElementById('newExpiryDate').value;
+        
+        if (!quantity || quantity < 1) {
+            showNotification('Please enter a valid quantity', 'error');
+            return;
+        }
+        
+        try {
+            const productRef = doc(db, "products", selectedProductForStock.id);
+            const currentStock = selectedProductForStock.stock || 0;
+            const newStock = currentStock + quantity;
+            
+            // Update product total stock (REMOVED expiryDate from here)
+            await updateDoc(productRef, {
+                stock: newStock,
+                lastUpdated: Timestamp.now()
+            });
+            
+            // If expiry date is provided, create a batch
+            if (newExpiry) {
+                const batchData = {
+                    productId: selectedProductForStock.id,
+                    batchNumber: `BATCH-${Date.now()}`,
+                    quantity: quantity,
+                    expiryDate: Timestamp.fromDate(new Date(newExpiry)),
+                    createdAt: Timestamp.now(),
+                    createdBy: loggedInUserId
+                };
+                
+                await addDoc(collection(db, "batches"), batchData);
+                
+                // Add activity log with batch info
+                await addDoc(collection(db, "activities"), {
+                    type: 'stock',
+                    description: `Added batch with ${quantity} units (expires ${new Date(newExpiry).toLocaleDateString()}) to ${selectedProductForStock.name}. New stock: ${newStock}`,
+                    timestamp: Timestamp.now(),
+                    userId: loggedInUserId
+                });
+            } else {
+                // Add activity log without batch
+                await addDoc(collection(db, "activities"), {
+                    type: 'stock',
+                    description: `Added ${quantity} units to ${selectedProductForStock.name}. New stock: ${newStock}`,
+                    timestamp: Timestamp.now(),
+                    userId: loggedInUserId
+                });
+            }
+            
+            showNotification(`Successfully added ${quantity} units to ${selectedProductForStock.name}`, 'success');
+            
+            // Close modal and reset
+            document.getElementById('addExistingProductModal').style.display = 'none';
+            selectedProductInfo.style.display = 'none';
+            existingProductSearch.value = '';
+            existingProductResults.innerHTML = '';
+            selectedProductForStock = null;
+            
+            // Refresh inventory if visible
+            const inventoryTab = document.getElementById('inventory-tab');
+            if (inventoryTab && inventoryTab.classList.contains('active')) {
+                loadInventory();
+            }
+            
+        } catch (error) {
+            console.error("Error adding stock:", error);
+            showNotification('Error adding stock: ' + error.message, 'error');
+        }
+    });
+}
+
+// Close modal function
+window.closeModal = function(modalId) {
+    const modal = document.getElementById(modalId);
+    if (modal) {
+        modal.style.display = 'none';
+    }
+}
+
 const productForm = document.getElementById('productForm');
 if (productForm) {
     productForm.addEventListener('submit', async (e) => {
@@ -4309,40 +4639,58 @@ if (productForm) {
         const editId = productForm.dataset.editId;
         
         try {
+            const discountableYes = document.getElementById('discountableYes');
+            const discountableNo = document.getElementById('discountableNo');
+            const discountable = discountableYes && discountableYes.checked ? true : false;
+            
+            // Get expiry date if provided (for initial batch)
+            const expiryDateInput = document.getElementById('productExpiry')?.value;
+            
             const productData = {
                 code: document.getElementById('productCode')?.value || '',
                 name: document.getElementById('productName')?.value || '',
                 category: document.getElementById('productCategory')?.value || '',
                 price: parseFloat(document.getElementById('productPrice')?.value) || 0,
                 stock: parseInt(document.getElementById('productStock')?.value) || 0,
-                expiryDate: Timestamp.fromDate(new Date(document.getElementById('productExpiry')?.value || Date.now())),
+                discountable: discountable,
+                // Don't store expiry date in product
                 description: document.getElementById('productDescription')?.value || '',
                 lastUpdated: Timestamp.now()
             };
             
             if (editId) {
-                // Update existing product
                 const productRef = doc(db, "products", editId);
                 await updateDoc(productRef, productData);
                 
-                // Add activity
                 await addDoc(collection(db, "activities"), {
                     type: 'product',
-                    description: `Product updated: ${productData.name}`,
+                    description: `Product updated: ${productData.name}${!discountable ? ' (Non-discountable)' : ''}`,
                     timestamp: Timestamp.now(),
                     userId: loggedInUserId
                 });
                 
                 showNotification('Product updated successfully!', 'success');
             } else {
-                // Add new product
                 productData.createdAt = Timestamp.now();
-                await addDoc(collection(db, "products"), productData);
+                const productRef = await addDoc(collection(db, "products"), productData);
                 
-                // Add activity
+                // If expiry date is provided for a new product, create an initial batch
+                if (expiryDateInput && productData.stock > 0) {
+                    const batchData = {
+                        productId: productRef.id,
+                        batchNumber: `BATCH-${Date.now()}`,
+                        quantity: productData.stock,
+                        expiryDate: Timestamp.fromDate(new Date(expiryDateInput)),
+                        createdAt: Timestamp.now(),
+                        createdBy: loggedInUserId
+                    };
+                    
+                    await addDoc(collection(db, "batches"), batchData);
+                }
+                
                 await addDoc(collection(db, "activities"), {
                     type: 'product',
-                    description: `New product added: ${productData.name}`,
+                    description: `New product added: ${productData.name}${!discountable ? ' (Non-discountable)' : ''}`,
                     timestamp: Timestamp.now(),
                     userId: loggedInUserId
                 });
@@ -4350,14 +4698,21 @@ if (productForm) {
                 showNotification('Product added successfully!', 'success');
             }
             
-            if (modal) {
-                modal.style.display = 'none';
+            // Close the modal
+            const productModal = document.getElementById('productModal');
+            if (productModal) {
+                productModal.style.display = 'none';
             }
             
             productForm.reset();
             productForm.dataset.editId = '';
             
-            // Refresh inventory
+            const discountableYesReset = document.getElementById('discountableYes');
+            if (discountableYesReset) {
+                discountableYesReset.checked = true;
+            }
+            
+            // Refresh the inventory view
             loadInventory();
             
         } catch (error) {
@@ -4367,7 +4722,6 @@ if (productForm) {
     });
 }
 
-// Helper function to format date
 function formatDate(timestamp) {
     if (!timestamp) return 'N/A';
     try {
@@ -4384,7 +4738,6 @@ function formatDate(timestamp) {
     }
 }
 
-// Logout functionality
 const logoutButton = document.getElementById('logout');
 if (logoutButton) {
     logoutButton.addEventListener('click', async () => {
@@ -4398,9 +4751,7 @@ if (logoutButton) {
     });
 }
 
-// Add mobile data labels function
 function addMobileDataLabels() {
-    // For inventory table
     const inventoryRows = document.querySelectorAll('#inventoryTableBody tr');
     inventoryRows.forEach(row => {
         const cells = row.querySelectorAll('td');
@@ -4410,7 +4761,6 @@ function addMobileDataLabels() {
         });
     });
 
-    // For sales table
     const salesRows = document.querySelectorAll('#salesTableBody tr');
     salesRows.forEach(row => {
         const cells = row.querySelectorAll('td');
@@ -4419,7 +4769,6 @@ function addMobileDataLabels() {
             cell.setAttribute('data-label', labels[index]);
         });
         
-        // Special handling for items column to preserve HTML
         if (cells[2]) {
             const itemsContent = cells[2].innerHTML;
             cells[2].setAttribute('data-label', 'Items');
@@ -4428,29 +4777,564 @@ function addMobileDataLabels() {
     });
 }
 
-// Fix mobile POS scroll
 function fixMobilePOSScroll() {
     const productsSection = document.querySelector('.products-section');
     const productsGrid = document.getElementById('productsGrid');
     
     if (productsSection && productsGrid) {
-        // Calculate available height
         const windowHeight = window.innerHeight;
         const headerHeight = document.querySelector('.mobile-header')?.offsetHeight || 60;
         const welcomeMessage = document.querySelector('.welcome-message')?.offsetHeight || 0;
         const posHeader = document.querySelector('.pos-header')?.offsetHeight || 60;
         
-        // Set fixed height for products grid with scroll
-        const availableHeight = windowHeight - headerHeight - welcomeMessage - posHeader - 100; // Extra padding
+        const availableHeight = windowHeight - headerHeight - welcomeMessage - posHeader - 100;
         productsGrid.style.maxHeight = `${availableHeight}px`;
         productsGrid.style.overflowY = 'auto';
         productsGrid.style.overflowX = 'hidden';
     }
 }
 
-// Add event listeners for PDF buttons
+// Add CSS styles (only one instance)
+const style = document.createElement('style');
+style.textContent = `
+    .non-discount-badge {
+        display: inline-block;
+        background: #95a5a6;
+        color: white;
+        font-size: 10px;
+        padding: 2px 6px;
+        border-radius: 10px;
+        margin-top: 5px;
+    }
+    
+    .non-discount-badge i {
+        margin-right: 3px;
+        font-size: 8px;
+    }
+    
+    .non-discount-badge-small {
+        display: inline-block;
+        background: #95a5a6;
+        color: white;
+        font-size: 9px;
+        padding: 2px 5px;
+        border-radius: 8px;
+        margin-left: 5px;
+    }
+    
+    .non-discount-badge-small i {
+        margin-right: 2px;
+        font-size: 7px;
+    }
+    
+    .non-discount-badge-table {
+        display: inline-block;
+        background: #95a5a6;
+        color: white;
+        font-size: 10px;
+        padding: 2px 6px;
+        border-radius: 10px;
+        margin-left: 8px;
+    }
+    
+    .discount-badge-table {
+        display: inline-block;
+        background: #27ae60;
+        color: white;
+        font-size: 10px;
+        padding: 2px 6px;
+        border-radius: 10px;
+        margin-left: 8px;
+    }
+    
+    .discount-note {
+        background: #e8f4fd;
+        padding: 10px;
+        border-radius: 5px;
+        font-size: 12px;
+        color: #3498db;
+        margin: 10px 0;
+    }
+    
+    .discount-note i {
+        margin-right: 5px;
+    }
+    
+    .product-card.non-discountable {
+        border-left: 3px solid #95a5a6;
+    }
+    
+    .exchange-eligible {
+        color: #27ae60;
+        font-size: 11px;
+        margin-left: 8px;
+        padding: 2px 6px;
+        background: #e8f8f5;
+        border-radius: 12px;
+        display: inline-flex;
+        align-items: center;
+        gap: 4px;
+    }
+    
+    .exchange-expired {
+        color: #e74c3c;
+        font-size: 11px;
+        margin-left: 8px;
+        padding: 2px 6px;
+        background: #fde9e9;
+        border-radius: 12px;
+        display: inline-flex;
+        align-items: center;
+        gap: 4px;
+    }
+    
+    .exchange-badge {
+        color: #9b59b6;
+        font-size: 11px;
+        margin-left: 8px;
+        padding: 2px 6px;
+        background: #f3e6ff;
+        border-radius: 12px;
+        display: inline-flex;
+        align-items: center;
+        gap: 4px;
+    }
+    
+    .exchange-badge-small {
+        color: #9b59b6;
+        font-size: 10px;
+        margin-left: 8px;
+        padding: 2px 5px;
+        background: #f3e6ff;
+        border-radius: 10px;
+        display: inline-flex;
+        align-items: center;
+        gap: 3px;
+    }
+    
+    .exchange-btn {
+        color: #9b59b6 !important;
+    }
+    
+    .exchange-btn:hover {
+        background: #f3e6ff !important;
+    }
+    
+    .exchange-disabled {
+        color: #bdc3c7 !important;
+        cursor: not-allowed !important;
+        opacity: 0.5;
+    }
+    
+    .exchange-disabled:hover::after {
+        content: attr(title);
+        position: absolute;
+        bottom: 100%;
+        left: 50%;
+        transform: translateX(-50%);
+        background: #2c3e50;
+        color: white;
+        padding: 4px 8px;
+        border-radius: 4px;
+        font-size: 11px;
+        white-space: nowrap;
+        margin-bottom: 5px;
+        z-index: 1000;
+    }
+    
+    .policy-note {
+        background: #e8f4fd;
+        padding: 8px 12px;
+        border-radius: 8px;
+        color: #3498db;
+        font-size: 13px;
+        margin: 10px 0;
+        display: flex;
+        align-items: center;
+        gap: 8px;
+    }
+    
+    .policy-note i {
+        font-size: 16px;
+    }
+    
+    .price-difference {
+        background: #f8f9fa;
+        padding: 15px;
+        border-radius: 8px;
+        margin: 15px 0;
+        border-left: 3px solid #3498db;
+    }
+    
+    .price-difference p {
+        margin: 5px 0;
+    }
+    
+    #diffAmount {
+        font-size: 18px;
+        font-weight: bold;
+    }
+    
+    .diff-note {
+        font-size: 12px;
+        color: #7f8c8d;
+        font-style: italic;
+    }
+    
+    .text-success {
+        color: #27ae60;
+    }
+    
+    .text-danger {
+        color: #e74c3c;
+    }
+    
+    .exchanged-qty {
+        background: #9b59b6;
+        color: white;
+        padding: 2px 6px;
+        border-radius: 4px;
+        font-size: 11px;
+        margin-left: 8px;
+    }
+    
+    .exchange-card {
+        background: #f3e6ff;
+        border-radius: 16px;
+        padding: 20px;
+        margin-top: 20px;
+        border: 1px solid #d9b3ff;
+    }
+    
+    .exchange-header {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        margin-bottom: 15px;
+    }
+    
+    .exchange-header i {
+        color: #9b59b6;
+        font-size: 18px;
+    }
+    
+    .exchange-header h3 {
+        margin: 0;
+        color: #9b59b6;
+        font-size: 16px;
+        font-weight: 600;
+    }
+    
+    .exchange-item {
+        background: white;
+        border-radius: 12px;
+        padding: 12px;
+        margin-bottom: 10px;
+    }
+    
+    .exchange-item:last-child {
+        margin-bottom: 0;
+    }
+    
+    .exchange-row {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        margin-bottom: 8px;
+    }
+    
+    .exchange-product {
+        font-weight: 600;
+        color: #2c3e50;
+    }
+    
+    .exchange-qty {
+        background: #e8d5ff;
+        color: #9b59b6;
+        padding: 2px 8px;
+        border-radius: 20px;
+        font-size: 12px;
+        font-weight: 600;
+    }
+    
+    .exchange-diff {
+        font-size: 13px;
+        font-weight: 500;
+        margin: 5px 0;
+    }
+    
+    .exchange-diff.positive {
+        color: #27ae60;
+    }
+    
+    .exchange-diff.negative {
+        color: #e74c3c;
+    }
+    
+    .exchange-reason {
+        font-size: 12px;
+        color: #7f8c8d;
+        background: #f8f9fa;
+        padding: 8px;
+        border-radius: 8px;
+        margin: 5px 0;
+    }
+    
+    .positive {
+        color: #27ae60;
+    }
+    
+    .negative {
+        color: #e74c3c;
+    }
+    
+    .sale-badge {
+        background: #3498db;
+        color: white;
+        font-size: 10px;
+        padding: 2px 5px;
+        border-radius: 10px;
+        margin-left: 8px;
+        display: inline-flex;
+        align-items: center;
+        gap: 3px;
+    }
+    
+    .exchange-item {
+        border-left: 3px solid #9b59b6;
+    }
+
+    /* Filter Summary Styles */
+    .filter-summary {
+        display: none;
+        align-items: center;
+        gap: 10px;
+        margin-top: 10px;
+        padding: 8px 15px;
+        background: #e8f4fd;
+        border-radius: 20px;
+        font-size: 13px;
+        color: #3498db;
+        flex-wrap: wrap;
+    }
+
+    .filter-summary i {
+        font-size: 12px;
+    }
+
+    .clear-filters-btn {
+        background: none;
+        border: none;
+        color: #e74c3c;
+        cursor: pointer;
+        font-size: 12px;
+        padding: 4px 8px;
+        border-radius: 15px;
+        display: inline-flex;
+        align-items: center;
+        gap: 4px;
+        transition: all 0.3s ease;
+        width: auto;
+        margin: 0;
+        box-shadow: none;
+    }
+
+    .clear-filters-btn:hover {
+        background: #fee;
+        color: #c0392b;
+    }
+
+    .clear-filters-btn i {
+        font-size: 10px;
+    }
+
+    /* Batch Management Styles */
+    .batch-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        margin-bottom: 20px;
+        padding-bottom: 10px;
+        border-bottom: 2px solid #3498db;
+    }
+
+    .product-info-summary {
+        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        color: white;
+        padding: 15px;
+        border-radius: 8px;
+        margin-bottom: 20px;
+    }
+
+    .product-info-summary p {
+        margin: 5px 0;
+    }
+
+    .batch-list {
+        max-height: 400px;
+        overflow-y: auto;
+        padding-right: 5px;
+    }
+
+    .batch-item {
+        background: white;
+        border: 1px solid #e0e0e0;
+        border-radius: 8px;
+        padding: 15px;
+        margin-bottom: 10px;
+        position: relative;
+        transition: all 0.3s ease;
+    }
+
+    .batch-item:hover {
+        box-shadow: 0 4px 12px rgba(0,0,0,0.1);
+    }
+
+    .batch-item.expired {
+        border-left: 4px solid #e74c3c;
+        background: #fdf3f2;
+    }
+
+    .batch-item.expiring-critical {
+        border-left: 4px solid #e74c3c;
+        background: #fdf3f2;
+    }
+
+    .batch-item.expiring-soon {
+        border-left: 4px solid #f39c12;
+        background: #fef9e7;
+    }
+
+    .batch-item.good {
+        border-left: 4px solid #27ae60;
+    }
+
+    .batch-header-row {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        margin-bottom: 10px;
+        padding-bottom: 5px;
+        border-bottom: 1px dashed #e0e0e0;
+    }
+
+    .batch-number {
+        font-size: 16px;
+        font-weight: 600;
+        color: #2c3e50;
+    }
+
+    .batch-number i {
+        color: #9b59b6;
+        margin-right: 5px;
+    }
+
+    .batch-status {
+        padding: 4px 10px;
+        border-radius: 20px;
+        font-size: 11px;
+        font-weight: 600;
+    }
+
+    .batch-status.expired,
+    .batch-status.expiring-critical {
+        background: #e74c3c;
+        color: white;
+    }
+
+    .batch-status.expiring-soon {
+        background: #f39c12;
+        color: white;
+    }
+
+    .batch-status.good {
+        background: #27ae60;
+        color: white;
+    }
+
+    .batch-details {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+        gap: 10px;
+        font-size: 13px;
+    }
+
+    .batch-detail {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        color: #34495e;
+    }
+
+    .batch-detail i {
+        width: 20px;
+        color: #9b59b6;
+    }
+
+    .batch-actions {
+        position: absolute;
+        top: 15px;
+        right: 15px;
+        display: flex;
+        gap: 5px;
+    }
+
+    .required {
+        color: #e74c3c;
+        margin-left: 3px;
+    }
+
+    .form-actions {
+        display: flex;
+        gap: 10px;
+        margin-top: 20px;
+    }
+
+    .form-actions button {
+        flex: 1;
+    }
+
+    /* Expiry Badge Styles */
+    .expiry-badge {
+        display: inline-flex;
+        align-items: center;
+        gap: 4px;
+        padding: 4px 8px;
+        border-radius: 20px;
+        font-size: 12px;
+        font-weight: 600;
+    }
+
+    .expiry-badge.expired {
+        background: #e74c3c;
+        color: white;
+    }
+
+    .expiry-badge.expiring-critical {
+        background: #e74c3c;
+        color: white;
+    }
+
+    .expiry-badge.expiring-soon {
+        background: #f39c12;
+        color: white;
+    }
+
+    .expiry-badge i {
+        font-size: 10px;
+    }
+
+    .no-expiry {
+        color: #95a5a6;
+        font-size: 12px;
+        font-style: italic;
+    }
+`;
+
+document.head.appendChild(style);
+
+// PDF buttons
 document.addEventListener('DOMContentLoaded', () => {
-    // Download Sales PDF button
     const downloadPDFBtn = document.getElementById('downloadPDFBtn');
     if (downloadPDFBtn) {
         downloadPDFBtn.addEventListener('click', (e) => {
@@ -4459,7 +5343,6 @@ document.addEventListener('DOMContentLoaded', () => {
         });
     }
     
-    // Download Report PDF button
     const downloadReportPDFBtn = document.getElementById('downloadReportPDFBtn');
     if (downloadReportPDFBtn) {
         downloadReportPDFBtn.addEventListener('click', (e) => {
@@ -4468,7 +5351,6 @@ document.addEventListener('DOMContentLoaded', () => {
         });
     }
 
-    // Add close button listeners for dashboard modals
     const lowStockCloseBtn = document.querySelector('#lowStockModal .close');
     if (lowStockCloseBtn) {
         lowStockCloseBtn.addEventListener('click', () => {
@@ -4482,11 +5364,17 @@ document.addEventListener('DOMContentLoaded', () => {
             document.getElementById('todaySalesModal').style.display = 'none';
         });
     }
+
+    const exchangeButton = document.getElementById('exchangeButton');
+    if (exchangeButton) {
+        exchangeButton.addEventListener('click', () => {
+            openExchangeModal();
+        });
+    }
 });
 
-// Initialize dashboard on load
+// Initialize dashboard
 document.addEventListener('DOMContentLoaded', () => {
-    // Load default tab
     const defaultTab = document.querySelector('.nav-item.active');
     if (defaultTab) {
         const tabId = defaultTab.getAttribute('data-tab');
@@ -4500,7 +5388,6 @@ document.addEventListener('DOMContentLoaded', () => {
         if (tabId === 'reports') loadReportsTab();
     }
 
-    // Initialize discount select
     const discountSelect = document.getElementById('discountSelect');
     if (discountSelect) {
         discountSelect.addEventListener('change', (e) => {
@@ -4510,7 +5397,6 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 });
 
-// Add window resize listener to handle orientation changes and scrolling
 window.addEventListener('resize', () => {
     if (window.innerWidth <= 768) {
         addMobileDataLabels();
@@ -4518,18 +5404,16 @@ window.addEventListener('resize', () => {
     }
 });
 
-// Add scroll fix when POS tab becomes active
 document.querySelectorAll('.nav-item[data-tab="pos"]').forEach(item => {
     item.addEventListener('click', () => {
         setTimeout(() => {
             if (window.innerWidth <= 768) {
                 fixMobilePOSScroll();
             }
-        }, 100); // Small delay to ensure content is loaded
+        }, 100);
     });
 });
 
-// Add scroll fix when dashboard tab becomes active
 document.querySelectorAll('.nav-item[data-tab="dashboard"]').forEach(item => {
     item.addEventListener('click', () => {
         setTimeout(() => {
@@ -4538,7 +5422,6 @@ document.querySelectorAll('.nav-item[data-tab="dashboard"]').forEach(item => {
     });
 });
 
-// Add reports tab loader
 document.querySelectorAll('.nav-item[data-tab="reports"]').forEach(item => {
     item.addEventListener('click', () => {
         setTimeout(() => {
@@ -4547,7 +5430,6 @@ document.querySelectorAll('.nav-item[data-tab="reports"]').forEach(item => {
     });
 });
 
-// Function to open sale details panel
 window.openSalePanel = async function(saleId) {
     try {
         const modal = document.getElementById('saleDetailsModal');
@@ -4558,7 +5440,6 @@ window.openSalePanel = async function(saleId) {
             return;
         }
         
-        // Show loading
         panelBody.innerHTML = `
             <div style="text-align: center; padding: 50px;">
                 <i class="fas fa-spinner fa-spin" style="font-size: 40px; color: #3498db;"></i>
@@ -4567,13 +5448,11 @@ window.openSalePanel = async function(saleId) {
         `;
         modal.style.display = 'block';
         
-        // For demo, show sample data
         if (!saleId || saleId === 'demo') {
             showSampleSalePanel();
             return;
         }
         
-        // Try to get real data
         const saleRef = doc(db, "sales", saleId);
         const saleDoc = await getDoc(saleRef);
         
@@ -4584,7 +5463,6 @@ window.openSalePanel = async function(saleId) {
         
         const sale = saleDoc.data();
         
-        // Format date
         const saleDate = sale.date?.toDate ? sale.date.toDate() : new Date();
         const formattedDate = saleDate.toLocaleDateString('en-US', { 
             year: 'numeric', 
@@ -4594,7 +5472,6 @@ window.openSalePanel = async function(saleId) {
             minute: '2-digit'
         });
         
-        // Build panel HTML
         panelBody.innerHTML = buildSalePanelHTML(sale, formattedDate);
         
     } catch (error) {
@@ -4603,7 +5480,6 @@ window.openSalePanel = async function(saleId) {
     }
 }
 
-// Function to close panel
 window.closeSalePanel = function() {
     const modal = document.getElementById('saleDetailsModal');
     if (modal) {
@@ -4611,19 +5487,23 @@ window.closeSalePanel = function() {
     }
 }
 
-// Build panel HTML from sale data
 function buildSalePanelHTML(sale, formattedDate) {
     const subtotal = sale.subtotal || 0;
+    const discountableSubtotal = sale.discountableSubtotal || 0;
+    const nonDiscountableSubtotal = sale.nonDiscountableSubtotal || 0;
     const discountPercentage = sale.discountPercentage || 0;
     const discountAmount = sale.discountAmount || 0;
     const total = sale.total || 0;
     const amountTendered = sale.amountTendered || 0;
     const change = sale.change || 0;
     
-    const itemsHtml = sale.items ? sale.items.map(item => `
+    const itemsHtml = sale.items ? sale.items.map(item => {
+        const discountMarker = item.discountable === false ? 
+            '<span class="non-discount-badge-small">🚫 No Discount</span>' : '';
+        return `
         <div class="item-row">
             <div class="item-info">
-                <div class="item-name">${item.name}</div>
+                <div class="item-name">${item.name} ${discountMarker}</div>
                 <div class="item-meta">
                     <span>Code: ${item.code || 'N/A'}</span>
                     <span class="item-qty">Qty: ${item.quantity}</span>
@@ -4631,10 +5511,9 @@ function buildSalePanelHTML(sale, formattedDate) {
             </div>
             <div class="item-price">₱${(item.price * item.quantity).toFixed(2)}</div>
         </div>
-    `).join('') : '<p style="text-align: center; color: #7f8c8d;">No items found</p>';
+    `}).join('') : '<p style="text-align: center; color: #7f8c8d;">No items found</p>';
     
     return `
-        <!-- Invoice Card -->
         <div class="invoice-card">
             <div class="invoice-header">
                 <div class="invoice-number">
@@ -4662,7 +5541,6 @@ function buildSalePanelHTML(sale, formattedDate) {
             </div>
         </div>
         
-        <!-- Items Card -->
         <div class="items-card">
             <div class="items-header">
                 <i class="fas fa-shopping-cart"></i>
@@ -4673,7 +5551,6 @@ function buildSalePanelHTML(sale, formattedDate) {
             </div>
         </div>
         
-        <!-- Summary Card -->
         <div class="summary-card">
             <div class="summary-row">
                 <span class="summary-label">Subtotal:</span>
@@ -4681,8 +5558,12 @@ function buildSalePanelHTML(sale, formattedDate) {
             </div>
             ${discountPercentage > 0 ? `
             <div class="summary-row">
+                <span class="summary-label">Discountable Amount:</span>
+                <span class="summary-value">₱${discountableSubtotal.toFixed(2)}</span>
+            </div>
+            <div class="summary-row">
                 <span class="summary-label">Discount (${discountPercentage}%):</span>
-                <span class="summary-value" style="color: #e74c3c;">-₱${discountAmount.toFixed(2)}</span>
+                <span class="summary-value discount">-₱${discountAmount.toFixed(2)}</span>
             </div>
             ` : ''}
             <div class="summary-row total-row">
@@ -4691,7 +5572,6 @@ function buildSalePanelHTML(sale, formattedDate) {
             </div>
         </div>
         
-        <!-- Payment Card -->
         <div class="payment-card">
             <div class="payment-header">
                 <i class="fas fa-credit-card"></i>
@@ -4713,7 +5593,6 @@ function buildSalePanelHTML(sale, formattedDate) {
             </div>
         </div>
         
-        <!-- Action Buttons -->
         <div class="panel-actions">
             <button class="panel-btn print" onclick="alert('Print feature coming soon!')">
                 <i class="fas fa-print"></i> Print
@@ -4726,7 +5605,6 @@ function buildSalePanelHTML(sale, formattedDate) {
             </button>
         </div>
         
-        <!-- Footer -->
         <div class="panel-footer">
             <i class="fas fa-check-circle" style="color: #27ae60;"></i>
             Transaction completed successfully
@@ -4734,11 +5612,9 @@ function buildSalePanelHTML(sale, formattedDate) {
     `;
 }
 
-// Show sample panel
 function showSampleSalePanel() {
     const panelBody = document.getElementById('salePanelBody');
     panelBody.innerHTML = `
-        <!-- Invoice Card -->
         <div class="invoice-card">
             <div class="invoice-header">
                 <div class="invoice-number">
@@ -4766,7 +5642,6 @@ function showSampleSalePanel() {
             </div>
         </div>
         
-        <!-- Items Card -->
         <div class="items-card">
             <div class="items-header">
                 <i class="fas fa-shopping-cart"></i>
@@ -4785,7 +5660,7 @@ function showSampleSalePanel() {
                 </div>
                 <div class="item-row">
                     <div class="item-info">
-                        <div class="item-name">Paracetamol 500mg</div>
+                        <div class="item-name">Paracetamol 500mg <span class="non-discount-badge-small">🚫 No Discount</span></div>
                         <div class="item-meta">
                             <span>Code: PAR-500</span>
                             <span class="item-qty">Qty: 3</span>
@@ -4806,23 +5681,25 @@ function showSampleSalePanel() {
             </div>
         </div>
         
-        <!-- Summary Card -->
         <div class="summary-card">
             <div class="summary-row">
                 <span class="summary-label">Subtotal:</span>
                 <span class="summary-value">₱383.00</span>
             </div>
             <div class="summary-row">
+                <span class="summary-label">Discountable Amount:</span>
+                <span class="summary-value">₱353.00</span>
+            </div>
+            <div class="summary-row">
                 <span class="summary-label">Discount (20%):</span>
-                <span class="summary-value" style="color: #e74c3c;">-₱76.60</span>
+                <span class="summary-value discount">-₱70.60</span>
             </div>
             <div class="summary-row total-row">
                 <span class="total-label">Total Amount:</span>
-                <span class="total-value">₱306.40</span>
+                <span class="total-value">₱312.40</span>
             </div>
         </div>
         
-        <!-- Payment Card -->
         <div class="payment-card">
             <div class="payment-header">
                 <i class="fas fa-credit-card"></i>
@@ -4839,12 +5716,11 @@ function showSampleSalePanel() {
                 </div>
                 <div class="payment-item">
                     <div class="label">Change</div>
-                    <div class="value change">₱193.60</div>
+                    <div class="value change">₱187.60</div>
                 </div>
             </div>
         </div>
         
-        <!-- Action Buttons -->
         <div class="panel-actions">
             <button class="panel-btn print" onclick="alert('Print feature coming soon!')">
                 <i class="fas fa-print"></i> Print
@@ -4857,7 +5733,6 @@ function showSampleSalePanel() {
             </button>
         </div>
         
-        <!-- Footer -->
         <div class="panel-footer">
             <i class="fas fa-check-circle" style="color: #27ae60;"></i>
             Transaction completed successfully
@@ -4865,7 +5740,6 @@ function showSampleSalePanel() {
     `;
 }
 
-// Update your view buttons to use the panel
 document.addEventListener('DOMContentLoaded', function() {
     document.querySelectorAll('.view-sale, .btn-icon.view-sale').forEach(btn => {
         btn.addEventListener('click', function(e) {
@@ -4876,10 +5750,53 @@ document.addEventListener('DOMContentLoaded', function() {
     });
 });
 
-// Close modal when clicking outside
 window.onclick = function(event) {
     const modal = document.getElementById('saleDetailsModal');
     if (event.target === modal) {
         closeSalePanel();
     }
+}// MIGRATION FUNCTION - Run this ONCE to convert existing products to batches
+async function migrateExpiryDatesToBatches() {
+    try {
+        console.log("Starting migration: Converting product expiry dates to batches...");
+        
+        const productsSnapshot = await getDocs(collection(db, "products"));
+        let migratedCount = 0;
+        
+        for (const doc of productsSnapshot.docs) {
+            const product = doc.data();
+            
+            // If product has expiry date and stock, create a batch
+            if (product.expiryDate && product.stock > 0) {
+                console.log(`Migrating ${product.name} - Stock: ${product.stock}`);
+                
+                // Create a batch for this product
+                const batchData = {
+                    productId: doc.id,
+                    batchNumber: `MIGRATED-${Date.now()}-${migratedCount}`,
+                    quantity: product.stock,
+                    expiryDate: product.expiryDate,
+                    createdAt: Timestamp.now(),
+                    createdBy: loggedInUserId || 'system',
+                    notes: 'Migrated from product expiry date'
+                };
+                
+                await addDoc(collection(db, "batches"), batchData);
+                migratedCount++;
+            }
+        }
+        
+        console.log(`Migration complete! Created ${migratedCount} batches.`);
+        alert(`Migration complete! Created ${migratedCount} batches. Refresh the page to see your inventory.`);
+        
+        // Refresh inventory
+        loadInventory();
+        
+    } catch (error) {
+        console.error("Error during migration:", error);
+        alert("Error during migration: " + error.message);
+    }
 }
+
+// Make it available globally
+window.migrateExpiryDatesToBatches = migrateExpiryDatesToBatches;
