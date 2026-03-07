@@ -907,6 +907,7 @@ if (processPaymentBtn) {
             let discountableSubtotal = 0;
             let nonDiscountableSubtotal = 0;
             
+            // Calculate totals first
             cart.forEach(item => {
                 const itemTotal = item.price * item.quantity;
                 if (item.discountable !== false) {
@@ -927,35 +928,53 @@ if (processPaymentBtn) {
             const thirtyDaysFromNow = new Date(today);
             thirtyDaysFromNow.setDate(thirtyDaysFromNow.getDate() + 30);
             
+            // Process items with proper discount calculation
+            const processedItems = cart.map(item => {
+                // Check if this item has expiring stock
+                let wasExpiring = false;
+                
+                if (item.expiringItems && item.expiringItems.length > 0) {
+                    wasExpiring = true;
+                } else if (item.earliestExpiry) {
+                    const daysUntil = Math.ceil((item.earliestExpiry - today) / (1000 * 60 * 60 * 24));
+                    wasExpiring = daysUntil <= 30;
+                } else if (item.expiringCount > 0) {
+                    wasExpiring = true;
+                }
+                
+                const itemOriginalTotal = item.price * item.quantity;
+                
+                // Calculate discounted price for this item if it's discountable
+                let itemDiscountedTotal = itemOriginalTotal;
+                let itemDiscountAmount = 0;
+                
+                if (item.discountable !== false && discountPercentage > 0) {
+                    // Apply discount proportionally based on the item's contribution to discountable subtotal
+                    const itemShare = itemOriginalTotal / discountableSubtotal;
+                    itemDiscountAmount = discountAmount * itemShare;
+                    itemDiscountedTotal = itemOriginalTotal - itemDiscountAmount;
+                }
+                
+                return {
+                    productId: item.id,
+                    brand: item.brand,
+                    generic: item.generic,
+                    price: item.price, // Original unit price
+                    quantity: item.quantity,
+                    originalTotal: itemOriginalTotal, // Total before discount
+                    discountAmount: itemDiscountAmount, // Discount applied to this item
+                    subtotal: itemDiscountedTotal, // Total after discount
+                    discountable: item.discountable !== false,
+                    wasExpiring: wasExpiring,
+                    expiryCount: item.expiringCount || 0
+                };
+            });
+            
             const saleData = {
                 invoiceNumber: invoiceNumber,
                 discountType: currentDiscountType,
                 discountRate: discountPercentage,
-                items: cart.map(item => {
-                    // Check if this item has expiring stock
-                    let wasExpiring = false;
-                    
-                    if (item.expiringItems && item.expiringItems.length > 0) {
-                        wasExpiring = true;
-                    } else if (item.earliestExpiry) {
-                        const daysUntil = Math.ceil((item.earliestExpiry - today) / (1000 * 60 * 60 * 24));
-                        wasExpiring = daysUntil <= 30;
-                    } else if (item.expiringCount > 0) {
-                        wasExpiring = true;
-                    }
-                    
-                    return {
-                        productId: item.id,
-                        brand: item.brand,
-                        generic: item.generic,
-                        price: item.price,
-                        quantity: item.quantity,
-                        subtotal: item.price * item.quantity,
-                        discountable: item.discountable !== false,
-                        wasExpiring: wasExpiring,
-                        expiryCount: item.expiringCount || 0
-                    };
-                }),
+                items: processedItems,
                 subtotal: subtotal,
                 discountableSubtotal: discountableSubtotal,
                 nonDiscountableSubtotal: nonDiscountableSubtotal,
@@ -971,6 +990,8 @@ if (processPaymentBtn) {
                 sellExpiringFirst: sellExpiringFirst,
                 hadExpiringItems: cart.some(item => item.expiringCount > 0)
             };
+            
+            console.log("Sale Data being saved:", saleData); // Debug log
             
             // First, save the sale
             await addDoc(collection(db, "sales"), saleData);
@@ -1037,7 +1058,8 @@ if (processPaymentBtn) {
             currentDiscountType = 'none';
             currentDiscount = 0;
             // Reset radio buttons
-            document.querySelector('input[name="discountType"][value="none"]').checked = true;
+            const noneRadio = document.querySelector('input[name="discountType"][value="none"]');
+            if (noneRadio) noneRadio.checked = true;
             updateCartDisplay();
             
             document.getElementById('checkoutModal').style.display = 'none';
@@ -1058,7 +1080,6 @@ if (processPaymentBtn) {
         }
     });
 }
-
 async function generateInvoiceNumber() {
     try {
         const today = new Date();

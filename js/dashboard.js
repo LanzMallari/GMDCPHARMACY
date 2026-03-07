@@ -7,6 +7,25 @@ if (!loggedInUserId) {
     window.location.href = 'index.html';
 }
 
+// Helper function to determine low stock threshold based on category
+function getLowStockThreshold(category) {
+    const categoryLower = (category || '').toLowerCase();
+    if (categoryLower === 'medicines' || categoryLower === 'medicine') {
+        return 100; // Medicines threshold - less than 100 is low stock
+    } else if (categoryLower === 'drinks' || categoryLower === 'beverages') {
+        return 20; // Drinks threshold - less than 20 is low stock
+    } else {
+        return 10; // Default threshold for other categories
+    }
+}
+
+// Helper function to determine if stock is low
+function isLowStock(stock, category) {
+    if (stock === 0) return false; // Out of stock is handled separately
+    const threshold = getLowStockThreshold(category);
+    return stock < threshold;
+}
+
 // Initialize
 document.addEventListener('DOMContentLoaded', () => {
     initializeDashboard();
@@ -104,11 +123,40 @@ async function loadDashboardStats() {
         const productsSnapshot = await getDocs(collection(db, "products"));
         document.getElementById('totalProducts').textContent = productsSnapshot.size;
         
-        // Get low stock count
+        // Get all available stock items
+        const stockItemsQuery = query(
+            collection(db, "stock_items"),
+            where("status", "==", "available")
+        );
+        const stockItemsSnapshot = await getDocs(stockItemsQuery);
+        
+        // Create a map of productId -> count of available stock
+        const availableStockMap = new Map();
+        stockItemsSnapshot.forEach(doc => {
+            const item = doc.data();
+            const productId = item.productId;
+            if (productId) {
+                availableStockMap.set(productId, (availableStockMap.get(productId) || 0) + 1);
+            }
+        });
+        
+        // Create a map of productId -> product data for quick access
+        const productsMap = new Map();
+        productsSnapshot.forEach(doc => {
+            productsMap.set(doc.id, doc.data());
+        });
+        
+        // Get low stock count based on category-specific thresholds
         let lowStock = 0;
         productsSnapshot.forEach(doc => {
-            const stock = doc.data().stock;
-            if (stock > 0 && stock < 10) lowStock++;
+            const productId = doc.id;
+            const product = doc.data();
+            const actualStock = availableStockMap.get(productId) || 0;
+            
+            // Use the same threshold logic as inventory.js
+            if (actualStock > 0 && isLowStock(actualStock, product.category)) {
+                lowStock++;
+            }
         });
         document.getElementById('lowStockCount').textContent = lowStock;
         
@@ -134,12 +182,11 @@ async function loadDashboardStats() {
         thirtyDaysFromNow.setDate(thirtyDaysFromNow.getDate() + 30);
         thirtyDaysFromNow.setHours(0, 0, 0, 0);
         
-        const stockItemsSnapshot = await getDocs(collection(db, "stock_items"));
         let expiringCount = 0;
         
         stockItemsSnapshot.forEach(doc => {
             const item = doc.data();
-            if (item.expiryDate && item.status === 'available') {
+            if (item.expiryDate) {
                 const expiryDate = item.expiryDate.toDate();
                 expiryDate.setHours(0, 0, 0, 0);
                 
@@ -154,6 +201,10 @@ async function loadDashboardStats() {
         // Make cards clickable
         const statCards = document.querySelectorAll('.stat-card');
         if (statCards.length >= 4) {
+            // Total Products card - click to go to inventory
+            statCards[0].style.cursor = 'pointer';
+            statCards[0].onclick = () => window.location.href = 'inventory.html';
+            
             // Low Stock card (2nd card)
             statCards[1].style.cursor = 'pointer';
             statCards[1].onclick = () => openLowStockModal();
@@ -173,9 +224,6 @@ async function loadDashboardStats() {
         console.error("Error loading dashboard stats:", error);
     }
 }
-
-// ==================== EXPIRING ITEMS MODAL ====================
-// ==================== EXPIRING ITEMS MODAL ====================
 
 // ==================== EXPIRING ITEMS MODAL ====================
 
@@ -200,6 +248,7 @@ async function openExpiringModal() {
         
         const thirtyDaysFromNow = new Date(today);
         thirtyDaysFromNow.setDate(thirtyDaysFromNow.getDate() + 30);
+        thirtyDaysFromNow.setHours(23, 59, 59, 999);
         
         const expiringItems = [];
         const productsMap = new Map(); // To store product details
@@ -225,16 +274,26 @@ async function openExpiringModal() {
                 if (expiryDate <= thirtyDaysFromNow) {
                     // Get product name from products map or from item
                     let productName = item.productName || 'Unknown Product';
+                    let productBrand = '';
+                    let productGeneric = '';
                     
-                    // If we have the productId but no productName, try to get it from productsMap
+                    // If we have the productId, try to get it from productsMap
                     if (item.productId && productsMap.has(item.productId)) {
-                        productName = productsMap.get(item.productId).name || productName;
+                        const product = productsMap.get(item.productId);
+                        productBrand = product.brand || '';
+                        productGeneric = product.generic || '';
+                        // Use brand as product name if available
+                        if (productBrand) {
+                            productName = productBrand;
+                        }
                     }
                     
                     expiringItems.push({
                         id: doc.id,
                         ...item,
                         productName: productName,
+                        productBrand: productBrand,
+                        productGeneric: productGeneric,
                         expiryDate: expiryDate // This is now a proper Date object
                     });
                 }
@@ -247,16 +306,19 @@ async function openExpiringModal() {
         // Group by product
         const groupedByProduct = {};
         expiringItems.forEach(item => {
-            const productName = item.productName || 'Unknown Product';
-            if (!groupedByProduct[productName]) {
-                groupedByProduct[productName] = {
+            // Use brand name if available, otherwise use productName
+            const displayName = item.productBrand || item.productName || 'Unknown Product';
+            if (!groupedByProduct[displayName]) {
+                groupedByProduct[displayName] = {
                     items: [],
                     count: 0,
-                    productId: item.productId
+                    productId: item.productId,
+                    brand: item.productBrand,
+                    generic: item.productGeneric
                 };
             }
-            groupedByProduct[productName].items.push(item);
-            groupedByProduct[productName].count++;
+            groupedByProduct[displayName].items.push(item);
+            groupedByProduct[displayName].count++;
         });
         
         // Calculate stats
@@ -310,6 +372,9 @@ async function openExpiringModal() {
                     statusText = `${daysUntilEarliest} days remaining`;
                 }
                 
+                // Create display name with generic if available
+                const displayName = data.generic ? `${productName} (${data.generic})` : productName;
+                
                 // Create a safe ID for the product
                 const safeProductId = productName.replace(/[^a-zA-Z0-9]/g, '');
                 
@@ -317,7 +382,7 @@ async function openExpiringModal() {
                     <div class="modal-item product-group" onclick="toggleExpiringDetails('${safeProductId}')">
                         <div class="modal-item-info">
                             <div class="modal-item-name">
-                                <strong>${productName}</strong>
+                                <strong>${displayName}</strong>
                                 <span class="item-count">${data.count} items</span>
                             </div>
                             <div class="modal-item-details">
@@ -383,7 +448,8 @@ async function openExpiringModal() {
             `;
         }
     }
-}   
+}
+
 function createExpiringModal() {
     // Check if modal already exists
     if (document.getElementById('expiringModal')) return;
@@ -402,7 +468,6 @@ function createExpiringModal() {
     document.body.insertAdjacentHTML('beforeend', modalHTML);
 }
 
-
 // Toggle function for expiring details
 window.toggleExpiringDetails = function(productId) {
     const subitems = document.getElementById(`subitems-${productId}`);
@@ -415,7 +480,7 @@ window.toggleExpiringDetails = function(productId) {
     }
 };
 
-// ==================== LOW STOCK MODAL ====================
+// ==================== LOW STOCK MODAL - FIXED ====================
 
 async function openLowStockModal() {
     try {
@@ -430,23 +495,54 @@ async function openLowStockModal() {
         modalBody.innerHTML = '<div class="modal-loading"><i class="fas fa-spinner fa-spin"></i><p>Loading low stock products...</p></div>';
         modal.style.display = 'block';
         
+        // Get all products
         const productsSnapshot = await getDocs(collection(db, "products"));
+        
+        // Get all available stock items to count actual available stock
+        const stockItemsQuery = query(
+            collection(db, "stock_items"),
+            where("status", "==", "available")
+        );
+        const stockItemsSnapshot = await getDocs(stockItemsQuery);
+        
+        // Create a map of productId -> count of available stock
+        const availableStockMap = new Map();
+        stockItemsSnapshot.forEach(doc => {
+            const item = doc.data();
+            const productId = item.productId;
+            if (productId) {
+                availableStockMap.set(productId, (availableStockMap.get(productId) || 0) + 1);
+            }
+        });
+        
         const lowStockProducts = [];
         
         productsSnapshot.forEach(doc => {
             const product = doc.data();
-            // Check actual stock from stock_items
-            if (product.stock > 0 && product.stock < 10) {
-                lowStockProducts.push({ id: doc.id, ...product });
+            const productId = doc.id;
+            
+            // Get actual available stock from stock_items
+            const actualStock = availableStockMap.get(productId) || 0;
+            
+            // Check if product has low stock based on category-specific threshold
+            if (actualStock > 0 && isLowStock(actualStock, product.category)) {
+                lowStockProducts.push({ 
+                    id: doc.id, 
+                    ...product,
+                    actualStock: actualStock // Use actual stock from stock_items
+                });
             }
         });
         
-        lowStockProducts.sort((a, b) => a.stock - b.stock);
+        lowStockProducts.sort((a, b) => a.actualStock - b.actualStock);
         
         if (lowStockProducts.length === 0) {
             modalBody.innerHTML = '<div class="modal-empty"><i class="fas fa-check-circle" style="font-size: 48px; color: #27ae60;"></i><p>No low stock products found!</p></div>';
             return;
         }
+        
+        // Calculate critical count (stock < 5 for any category)
+        const criticalCount = lowStockProducts.filter(p => p.actualStock < 5).length;
         
         let html = `
             <div class="modal-stats-summary">
@@ -456,28 +552,38 @@ async function openLowStockModal() {
                 </div>
                 <div class="modal-stat">
                     <span class="modal-stat-label">Critical (Stock < 5):</span>
-                    <span class="modal-stat-value critical">${lowStockProducts.filter(p => p.stock < 5).length}</span>
+                    <span class="modal-stat-value critical">${criticalCount}</span>
                 </div>
             </div>
             <div class="modal-items-container">
         `;
         
         lowStockProducts.forEach(product => {
-            const stockClass = product.stock < 5 ? 'critical-stock' : 'warning-stock';
+            const stockClass = product.actualStock < 5 ? 'critical-stock' : 'warning-stock';
+            
+            // Use brand as product name, and show generic if available
+            const productName = product.brand || product.name || 'Unnamed Product';
+            const genericDisplay = product.generic ? ` (${product.generic})` : '';
+            const displayName = productName + genericDisplay;
+            
+            // Add threshold info to tooltip
+            const threshold = getLowStockThreshold(product.category);
+            
             html += `
                 <div class="modal-item">
                     <div class="modal-item-info">
                         <div class="modal-item-name">
-                            <strong>${product.name || 'Unnamed'}</strong>
+                            <strong>${displayName}</strong>
                             ${product.code ? `<span class="item-code">${product.code}</span>` : ''}
                         </div>
                         <div class="modal-item-details">
                             <span><i class="fas fa-tag"></i> ${product.category || 'N/A'}</span>
                             <span><i class="fas fa-dollar-sign"></i> ₱${(product.price || 0).toFixed(2)}</span>
+                            <span class="threshold-info" title="Low stock threshold: less than ${threshold} units">⚠️ Threshold: ${threshold}</span>
                         </div>
                     </div>
                     <div class="modal-item-stock ${stockClass}">
-                        <span class="stock-badge">Stock: ${product.stock}</span>
+                        <span class="stock-badge">Stock: ${product.actualStock}</span>
                         <button class="btn-icon-small" onclick="window.location.href='inventory.html'" title="Restock">
                             <i class="fas fa-plus-circle"></i>
                         </button>
@@ -491,6 +597,17 @@ async function openLowStockModal() {
         
     } catch (error) {
         console.error("Error loading low stock:", error);
+        const modalBody = document.getElementById('lowStockModalBody');
+        if (modalBody) {
+            modalBody.innerHTML = `
+                <div class="modal-error">
+                    <i class="fas fa-exclamation-circle" style="font-size: 48px; color: #e74c3c;"></i>
+                    <p>Error loading low stock products</p>
+                    <p style="font-size: 12px; color: #7f8c8d; margin-top: 10px;">${error.message}</p>
+                    <button class="btn-primary" onclick="closeModal('lowStockModal')" style="margin-top: 20px;">Close</button>
+                </div>
+            `;
+        }
     }
 }
 
@@ -718,10 +835,13 @@ window.viewSaleDetails = async function(saleId) {
         
         let itemsHtml = '';
         sale.items.forEach(item => {
+            // Use brand and generic for display
+            const displayName = item.brand || item.name || 'Unknown';
+            const genericDisplay = item.generic ? ` (${item.generic})` : '';
             itemsHtml += `
                 <div class="item-row">
                     <div class="item-info">
-                        <div class="item-name">${item.name}</div>
+                        <div class="item-name">${displayName}${genericDisplay}</div>
                         <div class="item-meta">
                             <span>Qty: ${item.quantity}</span>
                         </div>
@@ -819,3 +939,6 @@ function setupEventListeners() {
 window.openExpiringModal = openExpiringModal;
 window.openLowStockModal = openLowStockModal;
 window.openTodaySalesModal = openTodaySalesModal;
+window.viewSaleDetails = viewSaleDetails;
+window.closeModal = closeModal;
+window.toggleExpiringDetails = toggleExpiringDetails;

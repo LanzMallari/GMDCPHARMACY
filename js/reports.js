@@ -155,6 +155,7 @@ async function generateReport() {
         let data = [];
         let totalSales = 0;
         let totalTransactions = 0;
+        let totalDiscountAmount = 0;
         
         const startDate = new Date(selectedYear, selectedMonth, 1);
         startDate.setHours(0, 0, 0, 0);
@@ -175,6 +176,7 @@ async function generateReport() {
         salesSnapshot.forEach(doc => {
             const sale = doc.data();
             sales.push({ id: doc.id, ...sale });
+            totalDiscountAmount += sale.discountAmount || 0;
         });
         
         switch(period) {
@@ -231,7 +233,7 @@ async function generateReport() {
         
         const averageSale = totalTransactions > 0 ? totalSales / totalTransactions : 0;
         
-        displayReport(period, labels, data, totalSales, totalTransactions, averageSale, selectedMonth, selectedYear);
+        displayReport(period, labels, data, totalSales, totalTransactions, averageSale, totalDiscountAmount, selectedMonth, selectedYear);
         
         await loadProductSalesBreakdown(selectedMonth, selectedYear);
         await loadFastMovingProducts(selectedMonth, selectedYear);
@@ -242,7 +244,7 @@ async function generateReport() {
     }
 }
 
-function displayReport(period, labels, data, totalSales, totalTransactions, averageSale, selectedMonth, selectedYear) {
+function displayReport(period, labels, data, totalSales, totalTransactions, averageSale, totalDiscountAmount, selectedMonth, selectedYear) {
     const reportContent = document.getElementById('reportStats');
     const chartCanvas = document.getElementById('reportChart');
     
@@ -260,6 +262,10 @@ function displayReport(period, labels, data, totalSales, totalTransactions, aver
             <div class="stat-card">
                 <div class="stat-icon"><i class="fas fa-receipt"></i></div>
                 <div class="stat-info"><h3>Transactions</h3><p>${totalTransactions}</p></div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-icon"><i class="fas fa-tags"></i></div>
+                <div class="stat-info"><h3>Total Discount</h3><p>₱${totalDiscountAmount.toFixed(2)}</p></div>
             </div>
             <div class="stat-card">
                 <div class="stat-icon"><i class="fas fa-calculator"></i></div>
@@ -343,14 +349,30 @@ async function loadProductSalesBreakdown(selectedMonth, selectedYear) {
         };
         
         let totals = {
-            all: { quantity: 0, revenue: 0 },
-            seniorPWD: { quantity: 0, revenue: 0 },
-            yakap: { quantity: 0, revenue: 0 }
+            all: { 
+                quantity: 0, 
+                revenue: 0,
+                originalRevenue: 0,
+                discountAmount: 0
+            },
+            seniorPWD: { 
+                quantity: 0, 
+                revenue: 0,
+                originalRevenue: 0,
+                discountAmount: 0
+            },
+            yakap: { 
+                quantity: 0, 
+                revenue: 0,
+                originalRevenue: 0,
+                discountAmount: 0
+            }
         };
         
         salesSnapshot.forEach(doc => {
             const sale = doc.data();
             const discountType = sale.discountType || 'none';
+            const discountRate = sale.discountPercentage || 0;
             
             if (sale.items && Array.isArray(sale.items)) {
                 sale.items.forEach(item => {
@@ -361,20 +383,30 @@ async function loadProductSalesBreakdown(selectedMonth, selectedYear) {
                     const displayName = genericName ? `${brandName} (${genericName})` : brandName;
                     const productKey = genericName ? `${brandName}|${genericName}` : brandName;
                     
+                    const itemOriginalRevenue = (item.price * item.quantity) || 0;
+                    const itemDiscountedRevenue = item.subtotal || itemOriginalRevenue;
+                    const itemDiscountAmount = itemOriginalRevenue - itemDiscountedRevenue;
+                    
                     // Always add to 'all'
-                    addToProductSales(productSales.all, productKey, brandName, genericName, displayName, item);
+                    addToProductSales(productSales.all, productKey, brandName, genericName, displayName, item, itemOriginalRevenue, itemDiscountedRevenue, itemDiscountAmount);
                     totals.all.quantity += item.quantity || 0;
-                    totals.all.revenue += (item.price * item.quantity) || 0;
+                    totals.all.originalRevenue += itemOriginalRevenue;
+                    totals.all.revenue += itemDiscountedRevenue;
+                    totals.all.discountAmount += itemDiscountAmount;
                     
                     // Add to specific discount type if applicable
                     if (discountType === 'seniorPWD') {
-                        addToProductSales(productSales.seniorPWD, productKey, brandName, genericName, displayName, item);
+                        addToProductSales(productSales.seniorPWD, productKey, brandName, genericName, displayName, item, itemOriginalRevenue, itemDiscountedRevenue, itemDiscountAmount);
                         totals.seniorPWD.quantity += item.quantity || 0;
-                        totals.seniorPWD.revenue += (item.price * item.quantity) || 0;
+                        totals.seniorPWD.originalRevenue += itemOriginalRevenue;
+                        totals.seniorPWD.revenue += itemDiscountedRevenue;
+                        totals.seniorPWD.discountAmount += itemDiscountAmount;
                     } else if (discountType === 'yakap') {
-                        addToProductSales(productSales.yakap, productKey, brandName, genericName, displayName, item);
+                        addToProductSales(productSales.yakap, productKey, brandName, genericName, displayName, item, itemOriginalRevenue, itemDiscountedRevenue, itemDiscountAmount);
                         totals.yakap.quantity += item.quantity || 0;
-                        totals.yakap.revenue += (item.price * item.quantity) || 0;
+                        totals.yakap.originalRevenue += itemOriginalRevenue;
+                        totals.yakap.revenue += itemDiscountedRevenue;
+                        totals.yakap.discountAmount += itemDiscountAmount;
                     }
                 });
             }
@@ -388,7 +420,9 @@ async function loadProductSalesBreakdown(selectedMonth, selectedYear) {
                 generic: data.generic,
                 displayName: data.displayName,
                 quantity: data.quantity,
-                revenue: data.revenue
+                originalRevenue: data.originalRevenue,
+                revenue: data.revenue,
+                discountAmount: data.discountAmount
             })).sort((a, b) => b.quantity - a.quantity),
             
             seniorPWD: Object.entries(productSales.seniorPWD).map(([key, data]) => ({
@@ -397,7 +431,9 @@ async function loadProductSalesBreakdown(selectedMonth, selectedYear) {
                 generic: data.generic,
                 displayName: data.displayName,
                 quantity: data.quantity,
-                revenue: data.revenue
+                originalRevenue: data.originalRevenue,
+                revenue: data.revenue,
+                discountAmount: data.discountAmount
             })).sort((a, b) => b.quantity - a.quantity),
             
             yakap: Object.entries(productSales.yakap).map(([key, data]) => ({
@@ -406,7 +442,9 @@ async function loadProductSalesBreakdown(selectedMonth, selectedYear) {
                 generic: data.generic,
                 displayName: data.displayName,
                 quantity: data.quantity,
-                revenue: data.revenue
+                originalRevenue: data.originalRevenue,
+                revenue: data.revenue,
+                discountAmount: data.discountAmount
             })).sort((a, b) => b.quantity - a.quantity)
         };
         
@@ -418,18 +456,22 @@ async function loadProductSalesBreakdown(selectedMonth, selectedYear) {
     }
 }
 
-function addToProductSales(productSalesObj, productKey, brandName, genericName, displayName, item) {
+function addToProductSales(productSalesObj, productKey, brandName, genericName, displayName, item, originalRevenue, discountedRevenue, discountAmount) {
     if (!productSalesObj[productKey]) {
         productSalesObj[productKey] = {
             brand: brandName,
             generic: genericName,
             displayName: displayName,
             quantity: 0,
-            revenue: 0
+            originalRevenue: 0,
+            revenue: 0,
+            discountAmount: 0
         };
     }
     productSalesObj[productKey].quantity += item.quantity || 0;
-    productSalesObj[productKey].revenue += (item.price * item.quantity) || 0;
+    productSalesObj[productKey].originalRevenue += originalRevenue;
+    productSalesObj[productKey].revenue += discountedRevenue;
+    productSalesObj[productKey].discountAmount += discountAmount;
 }
 
 function displayProductSalesBreakdown(productSalesArray, totals) {
@@ -449,6 +491,20 @@ function displayProductSalesBreakdown(productSalesArray, totals) {
                         <option value="seniorPWD" ${currentDiscountFilter === 'seniorPWD' ? 'selected' : ''}>Senior/PWD (₱${totals.seniorPWD.revenue.toFixed(2)})</option>
                         <option value="yakap" ${currentDiscountFilter === 'yakap' ? 'selected' : ''}>YAKAP (₱${totals.yakap.revenue.toFixed(2)})</option>
                     </select>
+                </div>
+            </div>
+            <div class="discount-summary-card">
+                <div class="summary-row">
+                    <span>Total Original Price:</span>
+                    <span>₱${selectedTotals.originalRevenue.toFixed(2)}</span>
+                </div>
+                <div class="summary-row discount">
+                    <span>Total Discount:</span>
+                    <span>-₱${selectedTotals.discountAmount.toFixed(2)}</span>
+                </div>
+                <div class="summary-row total">
+                    <span>Final Revenue:</span>
+                    <span>₱${selectedTotals.revenue.toFixed(2)}</span>
                 </div>
             </div>
             <p class="no-data">No product sales data for this period with the selected filter</p>
@@ -477,16 +533,35 @@ function displayProductSalesBreakdown(productSalesArray, totals) {
                 </select>
             </div>
         </div>
-        <p class="total-summary">Total Items Sold: ${selectedTotals.quantity} pcs | Total Revenue: ₱${selectedTotals.revenue.toFixed(2)}</p>
+        
+        <div class="discount-summary-card">
+            <div class="summary-row">
+                <span>Total Original Price:</span>
+                <span>₱${selectedTotals.originalRevenue.toFixed(2)}</span>
+            </div>
+            <div class="summary-row discount">
+                <span>Total Discount:</span>
+                <span>-₱${selectedTotals.discountAmount.toFixed(2)}</span>
+            </div>
+            <div class="summary-row total">
+                <span>Final Revenue:</span>
+                <span>₱${selectedTotals.revenue.toFixed(2)}</span>
+            </div>
+        </div>
+        
+        <p class="total-summary">Total Items Sold: ${selectedTotals.quantity} pcs</p>
+        
         <div class="product-sales-table-container">
             <table class="product-sales-table">
                 <thead>
                     <tr>
                         <th>Brand Name</th>
                         <th>Generic Name</th>
-                        <th>Quantity Sold</th>
-                        <th>Revenue (₱)</th>
-                        <th>% of Total</th>
+                        <th>Qty</th>
+                        <th>Original Price</th>
+                        <th>Discount</th>
+                        <th>Final Revenue</th>
+                        <th>%</th>
                     </tr>
                 </thead>
                 <tbody>
@@ -500,8 +575,10 @@ function displayProductSalesBreakdown(productSalesArray, totals) {
                 <td><strong>${product.brand}</strong></td>
                 <td>${genericDisplay}</td>
                 <td><strong>${product.quantity}</strong> pcs</td>
-                <td>₱${product.revenue.toFixed(2)}</td>
-                <td>${percentage}%</td>
+                <td>₱${product.originalRevenue.toFixed(2)}</td>
+                <td class="discount-cell">-₱${product.discountAmount.toFixed(2)}</td>
+                <td class="revenue-cell">₱${product.revenue.toFixed(2)}</td>
+                <td class="percentage-cell">${percentage}%</td>
             </tr>
         `;
     });
@@ -576,11 +653,20 @@ async function loadFastMovingProducts(selectedMonth, selectedYear) {
                             currentQuantity: 0,
                             prevQuantity: 0,
                             currentRevenue: 0,
-                            prevRevenue: 0
+                            prevRevenue: 0,
+                            currentOriginalRevenue: 0,
+                            currentDiscountAmount: 0
                         };
                     }
+                    
+                    const itemOriginalRevenue = (item.price * item.quantity) || 0;
+                    const itemDiscountedRevenue = item.subtotal || itemOriginalRevenue;
+                    const itemDiscountAmount = itemOriginalRevenue - itemDiscountedRevenue;
+                    
                     productAnalysis[productKey].currentQuantity += item.quantity || 0;
-                    productAnalysis[productKey].currentRevenue += (item.price * item.quantity) || 0;
+                    productAnalysis[productKey].currentRevenue += itemDiscountedRevenue;
+                    productAnalysis[productKey].currentOriginalRevenue += itemOriginalRevenue;
+                    productAnalysis[productKey].currentDiscountAmount += itemDiscountAmount;
                 });
             }
         });
@@ -601,11 +687,17 @@ async function loadFastMovingProducts(selectedMonth, selectedYear) {
                             currentQuantity: 0,
                             prevQuantity: 0,
                             currentRevenue: 0,
-                            prevRevenue: 0
+                            prevRevenue: 0,
+                            currentOriginalRevenue: 0,
+                            currentDiscountAmount: 0
                         };
                     }
+                    
+                    const itemOriginalRevenue = (item.price * item.quantity) || 0;
+                    const itemDiscountedRevenue = item.subtotal || itemOriginalRevenue;
+                    
                     productAnalysis[productKey].prevQuantity += item.quantity || 0;
-                    productAnalysis[productKey].prevRevenue += (item.price * item.quantity) || 0;
+                    productAnalysis[productKey].prevRevenue += itemDiscountedRevenue;
                 });
             }
         });
@@ -668,8 +760,10 @@ function displayFastMovingProducts(products) {
                         <th>Rank</th>
                         <th>Brand Name</th>
                         <th>Generic Name</th>
-                        <th>Quantity Sold</th>
-                        <th>Revenue (₱)</th>
+                        <th>Qty Sold</th>
+                        <th>Original Price</th>
+                        <th>Discount</th>
+                        <th>Final Revenue</th>
                         <th>Daily Velocity</th>
                         <th>vs Last Month</th>
                     </tr>
@@ -688,8 +782,10 @@ function displayFastMovingProducts(products) {
                 <td><strong>${product.brand}</strong></td>
                 <td>${genericDisplay}</td>
                 <td><strong>${product.currentQuantity}</strong> pcs</td>
-                <td>₱${product.currentRevenue.toFixed(2)}</td>
-                <td>${product.velocity} pcs/day</td>
+                <td>₱${product.currentOriginalRevenue.toFixed(2)}</td>
+                <td class="discount-cell">-₱${product.currentDiscountAmount.toFixed(2)}</td>
+                <td class="revenue-cell">₱${product.currentRevenue.toFixed(2)}</td>
+                <td>${product.velocity}/day</td>
                 <td class="${trendClass}">${trendIcon} ${product.growth}%</td>
             </tr>
         `;
@@ -725,12 +821,13 @@ async function downloadReportPDF() {
         
         const reportStats = document.getElementById('reportStats');
         const statsCards = reportStats.querySelectorAll('.stat-card');
-        let totalSales = 0, transactions = 0, averageSale = 0;
+        let totalSales = 0, transactions = 0, totalDiscount = 0, averageSale = 0;
         
-        if (statsCards.length >= 3) {
+        if (statsCards.length >= 4) {
             totalSales = parseFloat(statsCards[0]?.querySelector('p')?.textContent?.replace('₱', '') || 0);
             transactions = parseInt(statsCards[1]?.querySelector('p')?.textContent || 0);
-            averageSale = parseFloat(statsCards[2]?.querySelector('p')?.textContent?.replace('₱', '') || 0);
+            totalDiscount = parseFloat(statsCards[2]?.querySelector('p')?.textContent?.replace('₱', '') || 0);
+            averageSale = parseFloat(statsCards[3]?.querySelector('p')?.textContent?.replace('₱', '') || 0);
         }
         
         const productSalesData = await getProductSalesData(selectedMonth, selectedYear);
@@ -783,6 +880,8 @@ async function downloadReportPDF() {
         yPos += 6;
         doc.text(`Number of Transactions: ${transactions}`, margin + 5, yPos);
         yPos += 6;
+        doc.text(`Total Discounts: ₱${totalDiscount.toFixed(2)}`, margin + 5, yPos);
+        yPos += 6;
         doc.text(`Average Sale: ₱${averageSale.toFixed(2)}`, margin + 5, yPos);
         yPos += 15;
         
@@ -812,9 +911,11 @@ async function downloadReportPDF() {
                 const genericDisplay = product.generic || '—';
                 fastMovingRows.push([
                     `#${index + 1}`,
-                    product.brand.length > 15 ? product.brand.substring(0, 12) + '...' : product.brand,
-                    genericDisplay.length > 15 ? genericDisplay.substring(0, 12) + '...' : genericDisplay,
+                    product.brand.length > 12 ? product.brand.substring(0, 10) + '...' : product.brand,
+                    genericDisplay.length > 10 ? genericDisplay.substring(0, 8) + '...' : genericDisplay,
                     product.currentQuantity.toString(),
+                    '₱' + product.currentOriginalRevenue.toFixed(2),
+                    '₱' + product.currentDiscountAmount.toFixed(2),
                     '₱' + product.currentRevenue.toFixed(2),
                     product.velocity + '/day',
                     product.growth + '%'
@@ -822,7 +923,7 @@ async function downloadReportPDF() {
             });
             
             doc.autoTable({
-                head: [['Rank', 'Brand', 'Generic', 'Qty', 'Revenue', 'Velocity', 'Growth']],
+                head: [['Rank', 'Brand', 'Generic', 'Qty', 'Original', 'Discount', 'Final', 'Velocity', 'Growth']],
                 body: fastMovingRows,
                 startY: yPos,
                 theme: 'striped',
@@ -845,25 +946,28 @@ async function downloadReportPDF() {
             doc.text('Product Sales Breakdown - All Sales', margin, yPos);
             yPos += 7;
             
-            const totalItemsSold = productSalesData.all.reduce((sum, p) => sum + p.quantity, 0);
-            const totalRevenue = productSalesData.all.reduce((sum, p) => sum + p.revenue, 0);
+            const totalOriginal = productSalesData.all.reduce((sum, p) => sum + p.originalRevenue, 0);
+            const totalDiscount = productSalesData.all.reduce((sum, p) => sum + p.discountAmount, 0);
+            const totalFinal = productSalesData.all.reduce((sum, p) => sum + p.revenue, 0);
             
             doc.setFontSize(10);
             doc.setTextColor(127, 140, 141);
-            doc.text(`Total Items Sold: ${totalItemsSold} pcs | Total Revenue: ₱${totalRevenue.toFixed(2)}`, margin, yPos);
+            doc.text(`Summary: Original: ₱${totalOriginal.toFixed(2)} | Discount: -₱${totalDiscount.toFixed(2)} | Final: ₱${totalFinal.toFixed(2)}`, margin, yPos);
             yPos += 7;
             
-            const productTableColumn = ["Brand Name", "Generic Name", "Qty", "Revenue (₱)", "%"];
+            const productTableColumn = ["Brand", "Generic", "Qty", "Original", "Discount", "Final", "%"];
             const productTableRows = [];
             
             productSalesData.all.slice(0, 15).forEach(product => {
-                const percentage = totalRevenue > 0 ? ((product.revenue / totalRevenue) * 100).toFixed(1) : 0;
+                const percentage = totalFinal > 0 ? ((product.revenue / totalFinal) * 100).toFixed(1) : 0;
                 const genericDisplay = product.generic || '—';
                 productTableRows.push([
-                    product.brand.length > 20 ? product.brand.substring(0, 17) + '...' : product.brand,
-                    genericDisplay.length > 15 ? genericDisplay.substring(0, 12) + '...' : genericDisplay,
+                    product.brand.length > 15 ? product.brand.substring(0, 12) + '...' : product.brand,
+                    genericDisplay.length > 12 ? genericDisplay.substring(0, 10) + '...' : genericDisplay,
                     product.quantity.toString(),
-                    product.revenue.toFixed(2),
+                    '₱' + product.originalRevenue.toFixed(2),
+                    '₱' + product.discountAmount.toFixed(2),
+                    '₱' + product.revenue.toFixed(2),
                     percentage + '%'
                 ]);
             });
@@ -875,11 +979,13 @@ async function downloadReportPDF() {
                 theme: 'striped',
                 headStyles: { fillColor: [52, 152, 219] },
                 columnStyles: {
-                    0: { cellWidth: 40 },
-                    1: { cellWidth: 35 },
-                    2: { cellWidth: 20, halign: 'center' },
-                    3: { cellWidth: 30, halign: 'right' },
-                    4: { cellWidth: 20, halign: 'center' }
+                    0: { cellWidth: 30 },
+                    1: { cellWidth: 25 },
+                    2: { cellWidth: 15, halign: 'center' },
+                    3: { cellWidth: 20, halign: 'right' },
+                    4: { cellWidth: 20, halign: 'right' },
+                    5: { cellWidth: 20, halign: 'right' },
+                    6: { cellWidth: 15, halign: 'center' }
                 },
                 margin: { left: margin, right: margin }
             });
@@ -900,11 +1006,13 @@ async function downloadReportPDF() {
             doc.text('Senior/PWD Discounted Sales', margin, yPos);
             yPos += 7;
             
-            const totalRevenue = productSalesData.seniorPWD.reduce((sum, p) => sum + p.revenue, 0);
+            const totalOriginal = productSalesData.seniorPWD.reduce((sum, p) => sum + p.originalRevenue, 0);
+            const totalDiscount = productSalesData.seniorPWD.reduce((sum, p) => sum + p.discountAmount, 0);
+            const totalFinal = productSalesData.seniorPWD.reduce((sum, p) => sum + p.revenue, 0);
             
             doc.setFontSize(10);
             doc.setTextColor(127, 140, 141);
-            doc.text(`Total Revenue: ₱${totalRevenue.toFixed(2)}`, margin, yPos);
+            doc.text(`Summary: Original: ₱${totalOriginal.toFixed(2)} | Discount: -₱${totalDiscount.toFixed(2)} | Final: ₱${totalFinal.toFixed(2)}`, margin, yPos);
             yPos += 7;
             
             const productTableRows = [];
@@ -912,15 +1020,17 @@ async function downloadReportPDF() {
             productSalesData.seniorPWD.slice(0, 10).forEach(product => {
                 const genericDisplay = product.generic || '—';
                 productTableRows.push([
-                    product.brand.length > 20 ? product.brand.substring(0, 17) + '...' : product.brand,
-                    genericDisplay.length > 15 ? genericDisplay.substring(0, 12) + '...' : genericDisplay,
+                    product.brand.length > 15 ? product.brand.substring(0, 12) + '...' : product.brand,
+                    genericDisplay.length > 12 ? genericDisplay.substring(0, 10) + '...' : genericDisplay,
                     product.quantity.toString(),
-                    product.revenue.toFixed(2)
+                    '₱' + product.originalRevenue.toFixed(2),
+                    '₱' + product.discountAmount.toFixed(2),
+                    '₱' + product.revenue.toFixed(2)
                 ]);
             });
             
             doc.autoTable({
-                head: [["Brand Name", "Generic Name", "Qty", "Revenue (₱)"]],
+                head: [["Brand", "Generic", "Qty", "Original", "Discount", "Final"]],
                 body: productTableRows,
                 startY: yPos,
                 theme: 'striped',
@@ -944,11 +1054,13 @@ async function downloadReportPDF() {
             doc.text('YAKAP Discounted Sales', margin, yPos);
             yPos += 7;
             
-            const totalRevenue = productSalesData.yakap.reduce((sum, p) => sum + p.revenue, 0);
+            const totalOriginal = productSalesData.yakap.reduce((sum, p) => sum + p.originalRevenue, 0);
+            const totalDiscount = productSalesData.yakap.reduce((sum, p) => sum + p.discountAmount, 0);
+            const totalFinal = productSalesData.yakap.reduce((sum, p) => sum + p.revenue, 0);
             
             doc.setFontSize(10);
             doc.setTextColor(127, 140, 141);
-            doc.text(`Total Revenue: ₱${totalRevenue.toFixed(2)}`, margin, yPos);
+            doc.text(`Summary: Original: ₱${totalOriginal.toFixed(2)} | Discount: -₱${totalDiscount.toFixed(2)} | Final: ₱${totalFinal.toFixed(2)}`, margin, yPos);
             yPos += 7;
             
             const productTableRows = [];
@@ -956,15 +1068,17 @@ async function downloadReportPDF() {
             productSalesData.yakap.slice(0, 10).forEach(product => {
                 const genericDisplay = product.generic || '—';
                 productTableRows.push([
-                    product.brand.length > 20 ? product.brand.substring(0, 17) + '...' : product.brand,
-                    genericDisplay.length > 15 ? genericDisplay.substring(0, 12) + '...' : genericDisplay,
+                    product.brand.length > 15 ? product.brand.substring(0, 12) + '...' : product.brand,
+                    genericDisplay.length > 12 ? genericDisplay.substring(0, 10) + '...' : genericDisplay,
                     product.quantity.toString(),
-                    product.revenue.toFixed(2)
+                    '₱' + product.originalRevenue.toFixed(2),
+                    '₱' + product.discountAmount.toFixed(2),
+                    '₱' + product.revenue.toFixed(2)
                 ]);
             });
             
             doc.autoTable({
-                head: [["Brand Name", "Generic Name", "Qty", "Revenue (₱)"]],
+                head: [["Brand", "Generic", "Qty", "Original", "Discount", "Final"]],
                 body: productTableRows,
                 startY: yPos,
                 theme: 'striped',
@@ -1016,14 +1130,18 @@ async function getProductSalesData(selectedMonth, selectedYear) {
                     // Create a unique key for this product (brand + generic)
                     const productKey = genericName ? `${brandName}|${genericName}` : brandName;
                     
+                    const itemOriginalRevenue = (item.price * item.quantity) || 0;
+                    const itemDiscountedRevenue = item.subtotal || itemOriginalRevenue;
+                    const itemDiscountAmount = itemOriginalRevenue - itemDiscountedRevenue;
+                    
                     // Always add to 'all'
-                    addToProductSalesData(productSales.all, productKey, brandName, genericName, item);
+                    addToProductSalesData(productSales.all, productKey, brandName, genericName, item, itemOriginalRevenue, itemDiscountedRevenue, itemDiscountAmount);
                     
                     // Add to specific discount type
                     if (discountType === 'seniorPWD') {
-                        addToProductSalesData(productSales.seniorPWD, productKey, brandName, genericName, item);
+                        addToProductSalesData(productSales.seniorPWD, productKey, brandName, genericName, item, itemOriginalRevenue, itemDiscountedRevenue, itemDiscountAmount);
                     } else if (discountType === 'yakap') {
-                        addToProductSalesData(productSales.yakap, productKey, brandName, genericName, item);
+                        addToProductSalesData(productSales.yakap, productKey, brandName, genericName, item, itemOriginalRevenue, itemDiscountedRevenue, itemDiscountAmount);
                     }
                 });
             }
@@ -1089,12 +1207,21 @@ async function getFastMovingData(selectedMonth, selectedYear) {
                             generic: genericName,
                             currentQuantity: 0,
                             currentRevenue: 0,
+                            currentOriginalRevenue: 0,
+                            currentDiscountAmount: 0,
                             prevQuantity: 0,
                             prevRevenue: 0
                         };
                     }
+                    
+                    const itemOriginalRevenue = (item.price * item.quantity) || 0;
+                    const itemDiscountedRevenue = item.subtotal || itemOriginalRevenue;
+                    const itemDiscountAmount = itemOriginalRevenue - itemDiscountedRevenue;
+                    
                     productAnalysis[key].currentQuantity += item.quantity || 0;
-                    productAnalysis[key].currentRevenue += (item.price * item.quantity) || 0;
+                    productAnalysis[key].currentRevenue += itemDiscountedRevenue;
+                    productAnalysis[key].currentOriginalRevenue += itemOriginalRevenue;
+                    productAnalysis[key].currentDiscountAmount += itemDiscountAmount;
                 });
             }
         });
@@ -1114,12 +1241,18 @@ async function getFastMovingData(selectedMonth, selectedYear) {
                             generic: genericName,
                             currentQuantity: 0,
                             currentRevenue: 0,
+                            currentOriginalRevenue: 0,
+                            currentDiscountAmount: 0,
                             prevQuantity: 0,
                             prevRevenue: 0
                         };
                     }
+                    
+                    const itemOriginalRevenue = (item.price * item.quantity) || 0;
+                    const itemDiscountedRevenue = item.subtotal || itemOriginalRevenue;
+                    
                     productAnalysis[key].prevQuantity += item.quantity || 0;
-                    productAnalysis[key].prevRevenue += (item.price * item.quantity) || 0;
+                    productAnalysis[key].prevRevenue += itemDiscountedRevenue;
                 });
             }
         });
@@ -1146,17 +1279,21 @@ async function getFastMovingData(selectedMonth, selectedYear) {
     }
 }
 
-function addToProductSalesData(obj, key, brand, generic, item) {
+function addToProductSalesData(obj, key, brand, generic, item, originalRevenue, discountedRevenue, discountAmount) {
     if (!obj[key]) {
         obj[key] = {
             brand: brand,
             generic: generic,
             quantity: 0,
-            revenue: 0
+            originalRevenue: 0,
+            revenue: 0,
+            discountAmount: 0
         };
     }
     obj[key].quantity += item.quantity || 0;
-    obj[key].revenue += (item.price * item.quantity) || 0;
+    obj[key].originalRevenue += originalRevenue;
+    obj[key].revenue += discountedRevenue;
+    obj[key].discountAmount += discountAmount;
 }
 
 // Utility Functions

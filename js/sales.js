@@ -136,7 +136,8 @@ async function loadSalesHistory(sortOrder = 'desc') {
                 }
             }
             
-            const hadExpiring = sale.sellExpiringFirst ? 
+            // FIXED: Only show expiring badge if the sale actually had expiring items
+            const hadExpiring = sale.hadExpiringItems ? 
                 '<span class="expiring-sale-badge"><i class="fas fa-clock"></i> Had Expiring</span>' : '';
             
             const row = document.createElement('tr');
@@ -1695,10 +1696,14 @@ async function viewSaleDetails(saleId) {
                 const exchangedDisplay = item.exchangedQuantity ? 
                     `<span class="exchanged-badge">Exchanged: ${item.exchangedQuantity}</span>` : '';
                 
+                // FIXED: Show expiring badge at item level
+                const expiringBadge = item.wasExpiring ? 
+                    '<span class="item-expiring-badge-detail"><i class="fas fa-clock"></i> Expiring</span>' : '';
+                
                 itemsHtml += `
-                    <div class="item-row">
+                    <div class="item-row ${item.wasExpiring ? 'expiring-item-row' : ''}">
                         <div class="item-info">
-                            <div class="item-name">${displayName} ${genericDisplay} ${exchangedDisplay}</div>
+                            <div class="item-name">${displayName} ${genericDisplay} ${exchangedDisplay} ${expiringBadge}</div>
                             <div class="item-meta">Qty: ${item.quantity}</div>
                         </div>
                         <div class="item-price">₱${(item.price * item.quantity).toFixed(2)}</div>
@@ -1800,10 +1805,15 @@ if (salesDateFilter) {
                     }
                 }
                 
+                // FIXED: Only show expiring badge if the sale actually had expiring items
+                const hadExpiring = sale.hadExpiringItems ? 
+                    '<span class="expiring-sale-badge"><i class="fas fa-clock"></i> Had Expiring</span>' : '';
+                
                 const row = document.createElement('tr');
                 row.innerHTML = `
                     <td>
                         <span class="invoice-badge">${sale.invoiceNumber || `#${doc.id.slice(-8)}`}</span>
+                        ${hadExpiring}
                         ${discountBadge}
                     </td>
                     <td>${formatDate(sale.date)}</td>

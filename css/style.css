@@ -1154,7 +1154,7 @@ td {
 /* Welcome Message */
 .welcome-message {
     padding: 20px;
-    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+    background: linear-gradient(135deg, #03166e 0%, #031b88 100%);
     border-radius: 10px;
     color: white;
     margin-bottom: 20px;
@@ -9305,5 +9305,74 @@ td, tr, tbody, table {
         color: black !important;
         -webkit-print-color-adjust: exact;
         print-color-adjust: exact;
+    }
+}/* Discount Summary Card */
+.discount-summary-card {
+    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+    color: white;
+    padding: 15px;
+    border-radius: 12px;
+    margin-bottom: 20px;
+    box-shadow: 0 4px 15px rgba(102, 126, 234, 0.3);
+}
+
+.summary-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 8px 0;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.2);
+}
+
+.summary-row:last-child {
+    border-bottom: none;
+}
+
+.summary-row.discount {
+    color: #ffeaa7;
+    font-weight: 600;
+}
+
+.summary-row.total {
+    font-size: 16px;
+    font-weight: 700;
+    margin-top: 5px;
+    padding-top: 10px;
+    border-top: 2px solid rgba(255, 255, 255, 0.3);
+}
+
+/* Table cell styles */
+.discount-cell {
+    color: #e74c3c;
+    font-weight: 600;
+}
+
+.revenue-cell {
+    color: #27ae60;
+    font-weight: 600;
+}
+
+.percentage-cell {
+    color: #3498db;
+    font-weight: 600;
+}
+
+/* Stat card for total discount */
+.stat-card .stat-icon i.fa-tags {
+    color: #e67e22;
+}
+
+/* Mobile responsive */
+@media (max-width: 768px) {
+    .discount-summary-card {
+        padding: 12px;
+    }
+    
+    .summary-row {
+        font-size: 13px;
+    }
+    
+    .summary-row.total {
+        font-size: 14px;
     }
 }

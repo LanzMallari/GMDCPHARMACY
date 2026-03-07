@@ -88,6 +88,25 @@ function removeOverlay() {
     if (overlay) overlay.remove();
 }
 
+// Helper function to determine low stock threshold based on category
+function getLowStockThreshold(category) {
+    const categoryLower = (category || '').toLowerCase();
+    if (categoryLower === 'medicines' || categoryLower === 'medicine') {
+        return 100; // Medicines threshold - less than 100 is low stock
+    } else if (categoryLower === 'drinks' || categoryLower === 'beverages') {
+        return 20; // Drinks threshold - less than 20 is low stock
+    } else {
+        return 10; // Default threshold for other categories
+    }
+}
+
+// Helper function to determine if stock is low
+function isLowStock(stock, category) {
+    if (stock === 0) return false; // Out of stock is handled separately
+    const threshold = getLowStockThreshold(category);
+    return stock < threshold;
+}
+
 // ==================== INVENTORY FUNCTIONS ====================
 async function loadInventory() {
     try {
@@ -177,9 +196,17 @@ async function loadInventory() {
                 availableStock = product.stock || 0;
             }
             
-            // Determine stock status class
-            const stockClass = availableStock === 0 ? 'out-of-stock' : (availableStock < 10 ? 'low-stock' : '');
+            // Determine stock status class based on category-specific threshold
+            const isLow = isLowStock(availableStock, product.category);
+            const stockClass = availableStock === 0 ? 'out-of-stock' : (isLow ? 'low-stock' : '');
             const stockStatus = availableStock === 0 ? 'Out of Stock' : availableStock;
+            
+            // Add tooltip for low stock to show threshold
+            let stockTooltip = '';
+            if (isLow) {
+                const threshold = getLowStockThreshold(product.category);
+                stockTooltip = ` title="Low stock threshold: less than ${threshold} units (Current: ${availableStock})"`;
+            }
             
             // Discount status badge
             const discountStatus = product.discountable === false ? 
@@ -206,7 +233,7 @@ async function loadInventory() {
                 <td>${genericName}</td>
                 <td>${product.category || 'N/A'}</td>
                 <td>₱${(product.price || 0).toFixed(2)}</td>
-                <td class="${stockClass}">${stockStatus}</td>
+                <td class="${stockClass}"${stockTooltip}>${stockStatus}</td>
                 <td>${expiryDisplay}</td>
                 <td>
                     <button class="btn-icon view-stock-items" title="View Individual Stock Items" data-id="${product.id}" data-name="${brandName}"><i class="fas fa-list"></i></button>
@@ -318,9 +345,17 @@ async function loadInventoryFromStockItems() {
             // Get a sample item for additional data
             const sampleItem = group.stockItems[0] || {};
             
-            // Determine stock status class
-            const stockClass = group.availableCount === 0 ? 'out-of-stock' : (group.availableCount < 10 ? 'low-stock' : '');
+            // Determine stock status class based on category-specific threshold
+            const isLow = isLowStock(group.availableCount, group.category);
+            const stockClass = group.availableCount === 0 ? 'out-of-stock' : (isLow ? 'low-stock' : '');
             const stockStatus = group.availableCount === 0 ? 'Out of Stock' : group.availableCount;
+            
+            // Add tooltip for low stock to show threshold
+            let stockTooltip = '';
+            if (isLow) {
+                const threshold = getLowStockThreshold(group.category);
+                stockTooltip = ` title="Low stock threshold: less than ${threshold} units (Current: ${group.availableCount})"`;
+            }
             
             // Generate product code from serial number if available
             let productCode = group.code;
@@ -352,7 +387,7 @@ async function loadInventoryFromStockItems() {
                 <td>${group.generic}</td>
                 <td>${group.category}</td>
                 <td>₱${(price).toFixed(2)}</td>
-                <td class="${stockClass}">${stockStatus}</td>
+                <td class="${stockClass}"${stockTooltip}>${stockStatus}</td>
                 <td>${expiryDisplay}</td>
                 <td>
                     <button class="btn-icon view-stock-items" title="View Individual Stock Items" data-product-key="${key}" data-brand="${group.brand}"><i class="fas fa-list"></i></button>
