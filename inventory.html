@@ -109,10 +109,10 @@
                     <input type="text" placeholder="Search products..." id="inventorySearch" class="mobile-full-width">
                     <select id="categoryFilter" class="mobile-full-width">
                         <option value="">All Categories</option>
-                        <option value="medicines">Medicines</option>
-                        <option value="vitamins">Personal Care</option>
-                        <option value="Drinks">Drinks</option>
-                        <option value="personal-care">Personal Care</option>
+                        <option value="rx">RX (Prescription)</option>
+                        <option value="over the counter">Over the Counter (OTC)</option>
+                        <option value="food">Food</option>
+                        <option value="general merchandise">General Merchandise</option>
                     </select>
                     <select id="stockFilter" class="mobile-full-width">
                         <option value="">All Stock</option>
@@ -196,7 +196,7 @@
                         <input type="number" id="addStockQuantity" min="1" class="form-control">
                     </div>
                     <div class="form-group">
-                        <label>New Expiry Date</label>
+                        <label>New Expiry Date (Optional)</label>
                         <input type="date" id="newExpiryDate" class="form-control">
                     </div>
                     <button class="btn-primary" id="confirmAddStockBtn">Add Stock</button>
@@ -227,24 +227,25 @@
                 <div class="form-group">
                     <label>Category</label>
                     <select id="productCategory" required>
-                        <option value="medicines">Medicines</option>
-                        <option value="vitamins">Personal Care</option>
-                        <option value="Drinks">Drinks</option>
-                        <option value="personal-care">Personal Care</option>
+                        <option value="">Select Category</option>
+                        <option value="rx">RX (Prescription)</option>
+                        <option value="over the counter">Over the Counter (OTC)</option>
+                        <option value="food">Food</option>
+                        <option value="general merchandise">General Merchandise</option>
                     </select>
                 </div>
                 <div class="form-row mobile-row">
                     <div class="form-group">
-                        <label>Price</label>
+                        <label>Price (₱)</label>
                         <input type="number" id="productPrice" step="0.01" required>
                     </div>
                     <div class="form-group">
-                        <label>Stock</label>
+                        <label>Initial Stock</label>
                         <input type="number" id="productStock" required>
                     </div>
                 </div>
                 <div class="form-group">
-                    <label>Expiry Date (Optional - will create initial batch)</label>
+                    <label>Expiry Date (Optional - for initial stock)</label>
                     <input type="date" id="productExpiry">
                 </div>
                 <div class="form-group discount-group">
@@ -261,7 +262,7 @@
                     </div>
                 </div>
                 <div class="form-group">
-                    <label>Description</label>
+                    <label>Description (Optional)</label>
                     <textarea id="productDescription" rows="3"></textarea>
                 </div>
                 <button type="submit" class="btn-primary mobile-btn">Add Product</button>

@@ -11,27 +11,41 @@ if (!loggedInUserId) {
 let cart = [];
 let products = [];
 let currentDiscount = 0;
-let currentDiscountType = 'none'; // 'seniorPWD', 'yakap', or 'none'
+let currentDiscountType = 'none';
 let isProcessingPayment = false;
 let unsubscribeProducts = null;
-let sellExpiringFirst = true; // Default to true to prioritize expiring items
+let sellExpiringFirst = true;
+
+// Cache for stock items to reduce Firestore reads
+let stockItemsCache = null;
+let lastStockFetch = 0;
+const STOCK_CACHE_DURATION = 30000; // 30 seconds
+
+// Notification state
+let notificationBadge = null;
+let notificationPopup = null;
+let notificationInterval = null;
+let lastPopupDismissed = 0;
+const NOTIFICATION_CHECK_INTERVAL = 60 * 60 * 1000; // 1 hour in milliseconds
+const POPUP_DISMISS_DURATION = 60 * 60 * 1000; // 1 hour before showing popup again
 
 // Discount rates
 const DISCOUNT_RATES = {
-    seniorPWD: 20, // 20% discount for Senior/PWD
-    yakap: 10      // 10% discount for YAKAP
+    seniorPWD: 20,
+    yakap: 30 // Updated to 30%
 };
 
 // Initialize
 document.addEventListener('DOMContentLoaded', () => {
     initializePOS();
     setupEventListeners();
+    initializeNotifications();
 });
 
 async function initializePOS() {
     await loadUserData();
     updateDateTime();
-    loadProducts();
+    await loadProducts();
     setupSidebar();
     setupSellExpiringToggle();
     setupDiscountOptions();
@@ -105,13 +119,586 @@ function removeOverlay() {
     if (overlay) overlay.remove();
 }
 
+// ==================== NOTIFICATION SYSTEM ====================
+
+function initializeNotifications() {
+    createNotificationElements();
+    checkNotifications();
+    
+    if (notificationInterval) {
+        clearInterval(notificationInterval);
+    }
+    notificationInterval = setInterval(checkNotifications, NOTIFICATION_CHECK_INTERVAL);
+}
+
+function createNotificationElements() {
+    const notificationContainer = document.querySelector('.notification');
+    if (!notificationContainer) return;
+    
+    // Redesign notification logo
+    notificationContainer.innerHTML = `
+        <div class="notification-wrapper" style="position: relative; cursor: pointer;">
+            <div class="notification-icon" style="width: 45px; height: 45px; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); border-radius: 12px; display: flex; align-items: center; justify-content: center; transition: all 0.3s ease; box-shadow: 0 4px 15px rgba(102, 126, 234, 0.3);">
+                <i class="fas fa-bell" style="color: white; font-size: 20px;"></i>
+            </div>
+            <span class="badge" style="position: absolute; top: -8px; right: -8px; background: #e74c3c; color: white; font-size: 12px; padding: 4px 8px; border-radius: 20px; min-width: 24px; text-align: center; font-weight: 600; border: 2px solid white; display: none; box-shadow: 0 2px 5px rgba(0,0,0,0.2);">0</span>
+        </div>
+    `;
+    
+    notificationBadge = notificationContainer.querySelector('.badge');
+    
+    // Add hover effect
+    const notificationIcon = notificationContainer.querySelector('.notification-icon');
+    notificationIcon.addEventListener('mouseenter', () => {
+        notificationIcon.style.transform = 'scale(1.05)';
+        notificationIcon.style.boxShadow = '0 6px 20px rgba(102, 126, 234, 0.4)';
+    });
+    
+    notificationIcon.addEventListener('mouseleave', () => {
+        notificationIcon.style.transform = 'scale(1)';
+        notificationIcon.style.boxShadow = '0 4px 15px rgba(102, 126, 234, 0.3)';
+    });
+    
+    // Create notification popup
+    if (!document.getElementById('notificationPopup')) {
+        const popup = document.createElement('div');
+        popup.id = 'notificationPopup';
+        popup.className = 'notification-popup';
+        popup.style.cssText = `
+            position: absolute;
+            top: 60px;
+            right: 0;
+            width: 420px;
+            background: white;
+            border-radius: 16px;
+            box-shadow: 0 10px 40px rgba(0,0,0,0.15);
+            z-index: 1000;
+            display: none;
+            animation: slideDown 0.3s ease;
+            border: 1px solid rgba(0,0,0,0.05);
+            overflow: hidden;
+        `;
+        
+        popup.innerHTML = `
+            <div class="notification-popup-header" style="padding: 20px; border-bottom: 1px solid #eef2f6; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);">
+                <div style="display: flex; justify-content: space-between; align-items: center;">
+                    <div style="display: flex; align-items: center; gap: 12px;">
+                        <div style="width: 40px; height: 40px; background: rgba(255,255,255,0.2); border-radius: 10px; display: flex; align-items: center; justify-content: center;">
+                            <i class="fas fa-bell" style="color: white; font-size: 18px;"></i>
+                        </div>
+                        <div>
+                            <h3 style="margin: 0; font-size: 16px; color: white; font-weight: 600;">Notifications</h3>
+                            <p style="margin: 2px 0 0; font-size: 12px; color: rgba(255,255,255,0.7);">Stay updated with alerts</p>
+                        </div>
+                    </div>
+                    <div style="display: flex; gap: 8px;">
+                        <button class="notification-refresh-btn" style="background: rgba(255,255,255,0.2); border: none; color: white; width: 36px; height: 36px; border-radius: 10px; cursor: pointer; display: flex; align-items: center; justify-content: center; transition: all 0.2s;">
+                            <i class="fas fa-sync-alt" style="font-size: 14px;"></i>
+                        </button>
+                        <button class="notification-close-btn" style="background: rgba(255,255,255,0.2); border: none; color: white; width: 36px; height: 36px; border-radius: 10px; cursor: pointer; display: flex; align-items: center; justify-content: center; transition: all 0.2s;">
+                            <i class="fas fa-times" style="font-size: 14px;"></i>
+                        </button>
+                    </div>
+                </div>
+            </div>
+            <div class="notification-popup-body" id="notificationPopupBody" style="padding: 15px; max-height: 400px; overflow-y: auto;">
+                <div class="loading" style="text-align: center; padding: 40px; color: #7f8c8d;">
+                    <i class="fas fa-spinner fa-spin" style="font-size: 32px; margin-bottom: 15px; color: #667eea;"></i>
+                    <p style="font-size: 14px;">Loading notifications...</p>
+                </div>
+            </div>
+            <div class="notification-popup-footer" style="padding: 15px 20px; border-top: 1px solid #eef2f6; background: #f8fafc;">
+                <div style="display: flex; justify-content: space-between; align-items: center;">
+                    <div style="display: flex; align-items: center; gap: 8px;">
+                        <i class="far fa-clock" style="color: #95a5a6; font-size: 12px;"></i>
+                        <span style="color: #7f8c8d; font-size: 12px;">Last checked: <span id="lastNotificationCheck">Never</span></span>
+                    </div>
+                    <button class="view-all-notifications" style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); border: none; color: white; padding: 8px 16px; border-radius: 20px; font-size: 12px; font-weight: 600; cursor: pointer; display: flex; align-items: center; gap: 6px; transition: all 0.2s;">
+                        <i class="fas fa-eye"></i> View All
+                    </button>
+                </div>
+            </div>
+        `;
+        
+        notificationContainer.style.position = 'relative';
+        notificationContainer.appendChild(popup);
+        
+        // Add animation keyframes
+        const style = document.createElement('style');
+        style.textContent = `
+            @keyframes slideDown {
+                from {
+                    transform: translateY(-10px);
+                    opacity: 0;
+                }
+                to {
+                    transform: translateY(0);
+                    opacity: 1;
+                }
+            }
+            
+            .notification-item {
+                transition: all 0.2s ease;
+                border: 1px solid transparent;
+                margin-bottom: 8px;
+            }
+            
+            .notification-item:hover {
+                transform: translateX(-3px);
+                border-color: rgba(0,0,0,0.05);
+                box-shadow: 0 4px 12px rgba(0,0,0,0.05);
+            }
+            
+            .notification-refresh-btn:hover, .notification-close-btn:hover {
+                background: rgba(255,255,255,0.3) !important;
+                transform: rotate(90deg);
+            }
+            
+            .view-all-notifications:hover {
+                transform: translateY(-2px);
+                box-shadow: 0 4px 15px rgba(102, 126, 234, 0.4);
+            }
+            
+            #notificationPopupBody::-webkit-scrollbar {
+                width: 6px;
+            }
+            
+            #notificationPopupBody::-webkit-scrollbar-track {
+                background: #f1f1f1;
+                border-radius: 10px;
+            }
+            
+            #notificationPopupBody::-webkit-scrollbar-thumb {
+                background: #cbd5e0;
+                border-radius: 10px;
+            }
+            
+            #notificationPopupBody::-webkit-scrollbar-thumb:hover {
+                background: #a0aec0;
+            }
+            
+            @keyframes pulse {
+                0% {
+                    box-shadow: 0 0 0 2px #fff, 0 0 0 4px #e74c3c;
+                }
+                50% {
+                    box-shadow: 0 0 0 2px #fff, 0 0 0 8px #e74c3c;
+                }
+                100% {
+                    box-shadow: 0 0 0 2px #fff, 0 0 0 4px #e74c3c;
+                }
+            }
+        `;
+        document.head.appendChild(style);
+        
+        // Toggle popup on click
+        notificationContainer.addEventListener('click', (e) => {
+            e.stopPropagation();
+            toggleNotificationPopup();
+        });
+        
+        // Close button
+        popup.querySelector('.notification-close-btn').addEventListener('click', (e) => {
+            e.stopPropagation();
+            hideNotificationPopup();
+            lastPopupDismissed = Date.now();
+        });
+        
+        // Refresh button
+        popup.querySelector('.notification-refresh-btn').addEventListener('click', (e) => {
+            e.stopPropagation();
+            checkNotifications(true);
+        });
+        
+        // View all button
+        popup.querySelector('.view-all-notifications').addEventListener('click', (e) => {
+            e.stopPropagation();
+            window.location.href = 'reports.html';
+        });
+        
+        // Close popup when clicking outside
+        document.addEventListener('click', (e) => {
+            if (!popup.contains(e.target) && !notificationContainer.contains(e.target)) {
+                hideNotificationPopup();
+            }
+        });
+    }
+    
+    notificationPopup = document.getElementById('notificationPopup');
+}
+
+function toggleNotificationPopup() {
+    if (!notificationPopup) return;
+    
+    if (notificationPopup.style.display === 'none' || notificationPopup.style.display === '') {
+        notificationPopup.style.display = 'block';
+        loadNotificationDetails();
+    } else {
+        notificationPopup.style.display = 'none';
+    }
+}
+
+function hideNotificationPopup() {
+    if (notificationPopup) {
+        notificationPopup.style.display = 'none';
+    }
+}
+
+function showNotificationPopup() {
+    if (!notificationPopup) return;
+    
+    const now = Date.now();
+    if (now - lastPopupDismissed < POPUP_DISMISS_DURATION) {
+        return;
+    }
+    
+    notificationPopup.style.display = 'block';
+    loadNotificationDetails();
+    
+    setTimeout(() => {
+        if (notificationPopup && notificationPopup.style.display === 'block') {
+            notificationPopup.style.display = 'none';
+        }
+    }, 10000);
+}
+
+async function checkNotifications(forceRefresh = false) {
+    try {
+        const [productsSnapshot, stockItemsSnapshot] = await Promise.all([
+            getDocs(collection(db, "products")),
+            getDocs(collection(db, "stock_items"))
+        ]);
+        
+        const productsMap = new Map();
+        productsSnapshot.forEach(doc => {
+            productsMap.set(doc.id, doc.data());
+        });
+        
+        const today = new Date();
+        today.setHours(0, 0, 0, 0);
+        
+        const threeDaysFromNow = new Date(today);
+        threeDaysFromNow.setDate(threeDaysFromNow.getDate() + 3);
+        
+        const sevenDaysFromNow = new Date(today);
+        sevenDaysFromNow.setDate(sevenDaysFromNow.getDate() + 7);
+        
+        let expiringUrgent = 0;
+        let expiringWarning = 0;
+        let lowStockCount = 0;
+        
+        const expiringProducts = [];
+        const lowStockProducts = [];
+        
+        // Helper function for low stock threshold
+        function getLowStockThreshold(category) {
+            const categoryLower = (category || '').toLowerCase();
+            if (categoryLower === 'rx' || categoryLower === 'rx medicine') return 50;
+            if (categoryLower === 'over the counter' || categoryLower === 'otc') return 30;
+            if (categoryLower === 'food' || categoryLower === 'foods') return 5;
+            if (categoryLower === 'general merchandise' || categoryLower === 'merchandise') return 2;
+            return 10;
+        }
+        
+        function isLowStock(stock, category) {
+            if (stock === 0) return false;
+            const threshold = getLowStockThreshold(category);
+            return stock < threshold;
+        }
+        
+        // Process stock items for expiry
+        stockItemsSnapshot.forEach(doc => {
+            const item = doc.data();
+            if (item.expiryDate && item.status === 'available') {
+                const expiryDate = item.expiryDate.toDate();
+                expiryDate.setHours(0, 0, 0, 0);
+                
+                let productName = item.productName || 'Unknown';
+                if (item.productId && productsMap.has(item.productId)) {
+                    const product = productsMap.get(item.productId);
+                    productName = product.brand || product.name || productName;
+                }
+                
+                if (expiryDate <= threeDaysFromNow) {
+                    expiringUrgent++;
+                    expiringProducts.push({
+                        name: productName,
+                        serial: item.serialNumber,
+                        expiryDate: expiryDate,
+                        type: 'urgent',
+                        daysLeft: Math.ceil((expiryDate - today) / (1000 * 60 * 60 * 24))
+                    });
+                } else if (expiryDate <= sevenDaysFromNow) {
+                    expiringWarning++;
+                    expiringProducts.push({
+                        name: productName,
+                        serial: item.serialNumber,
+                        expiryDate: expiryDate,
+                        type: 'warning',
+                        daysLeft: Math.ceil((expiryDate - today) / (1000 * 60 * 60 * 24))
+                    });
+                }
+            }
+        });
+        
+        // Create available stock map for low stock check
+        const availableStockMap = new Map();
+        stockItemsSnapshot.forEach(doc => {
+            const item = doc.data();
+            if (item.status === 'available' && item.productId) {
+                availableStockMap.set(item.productId, (availableStockMap.get(item.productId) || 0) + 1);
+            }
+        });
+        
+        // Check for low stock
+        productsSnapshot.forEach(doc => {
+            const product = doc.data();
+            const productId = doc.id;
+            const actualStock = availableStockMap.get(productId) || 0;
+            
+            if (actualStock > 0 && isLowStock(actualStock, product.category)) {
+                lowStockCount++;
+                const productName = product.brand || product.name || 'Unknown';
+                const threshold = getLowStockThreshold(product.category);
+                lowStockProducts.push({
+                    name: productName,
+                    stock: actualStock,
+                    threshold: threshold
+                });
+            }
+        });
+        
+        // Sort notifications
+        expiringProducts.sort((a, b) => {
+            if (a.type === 'urgent' && b.type !== 'urgent') return -1;
+            if (a.type !== 'urgent' && b.type === 'urgent') return 1;
+            return a.daysLeft - b.daysLeft;
+        });
+        
+        lowStockProducts.sort((a, b) => (a.stock / a.threshold) - (b.stock / b.threshold));
+        
+        const totalNotifications = expiringUrgent + expiringWarning + lowStockCount;
+        
+        // Update notification badge
+        if (notificationBadge) {
+            notificationBadge.textContent = totalNotifications;
+            notificationBadge.style.display = totalNotifications > 0 ? 'inline' : 'none';
+            
+            if (expiringUrgent > 0) {
+                notificationBadge.style.background = '#e74c3c';
+                notificationBadge.style.boxShadow = '0 0 0 2px #fff, 0 0 0 4px #e74c3c';
+                notificationBadge.style.animation = 'pulse 2s infinite';
+            } else if (expiringWarning > 0 || lowStockCount > 0) {
+                notificationBadge.style.background = '#f39c12';
+                notificationBadge.style.boxShadow = '0 0 0 2px #fff, 0 0 0 4px #f39c12';
+            }
+        }
+        
+        // Store notification data
+        window.notificationData = {
+            expiringUrgent,
+            expiringWarning,
+            lowStockCount,
+            expiringProducts,
+            lowStockProducts,
+            lastCheck: new Date()
+        };
+        
+        const lastCheckSpan = document.getElementById('lastNotificationCheck');
+        if (lastCheckSpan) {
+            lastCheckSpan.textContent = formatTimeAgo(new Date());
+        }
+        
+        if (totalNotifications > 0) {
+            showNotificationPopup();
+        }
+        
+    } catch (error) {
+        console.error("Error checking notifications:", error);
+    }
+}
+
+function formatTimeAgo(date) {
+    const now = new Date();
+    const diffMs = now - date;
+    const diffMins = Math.floor(diffMs / 60000);
+    const diffHours = Math.floor(diffMs / 3600000);
+    
+    if (diffMins < 1) return 'Just now';
+    if (diffMins < 60) return `${diffMins} minute${diffMins > 1 ? 's' : ''} ago`;
+    if (diffHours < 24) return `${diffHours} hour${diffHours > 1 ? 's' : ''} ago`;
+    return date.toLocaleDateString();
+}
+
+function formatExpiryDate(date) {
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const diffDays = Math.ceil((date - today) / (1000 * 60 * 60 * 24));
+    
+    if (diffDays === 0) return 'Today';
+    if (diffDays === 1) return 'Tomorrow';
+    if (diffDays < 0) return 'Expired';
+    return `in ${diffDays} days`;
+}
+
+async function loadNotificationDetails() {
+    const popupBody = document.getElementById('notificationPopupBody');
+    if (!popupBody) return;
+    
+    if (!window.notificationData) {
+        await checkNotifications(true);
+    }
+    
+    const data = window.notificationData || {
+        expiringUrgent: 0,
+        expiringWarning: 0,
+        lowStockCount: 0,
+        expiringProducts: [],
+        lowStockProducts: []
+    };
+    
+    let html = '';
+    
+    if (data.expiringUrgent === 0 && data.expiringWarning === 0 && data.lowStockCount === 0) {
+        html = `
+            <div class="no-notifications" style="text-align: center; padding: 60px 20px;">
+                <div style="width: 80px; height: 80px; background: linear-gradient(135deg, #e0f2fe 0%, #bae6fd 100%); border-radius: 50%; display: flex; align-items: center; justify-content: center; margin: 0 auto 20px;">
+                    <i class="fas fa-check-circle" style="font-size: 40px; color: #0284c7;"></i>
+                </div>
+                <h4 style="margin: 0 0 10px; color: #2c3e50; font-size: 18px;">All Clear!</h4>
+                <p style="margin: 0; color: #7f8c8d; font-size: 14px;">No notifications at this time.</p>
+            </div>
+        `;
+    } else {
+        // Urgent expiring items
+        if (data.expiringProducts.filter(p => p.type === 'urgent').length > 0) {
+            html += `
+                <div style="margin-bottom: 20px;">
+                    <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; padding: 0 5px;">
+                        <div style="display: flex; align-items: center; gap: 8px;">
+                            <div style="width: 8px; height: 8px; background: #e74c3c; border-radius: 50%;"></div>
+                            <h4 style="margin: 0; font-size: 14px; color: #e74c3c; font-weight: 600;">URGENT - Expiring Soon</h4>
+                        </div>
+                        <span style="background: #fdf3f2; color: #e74c3c; padding: 4px 10px; border-radius: 20px; font-size: 11px; font-weight: 600;">${data.expiringProducts.filter(p => p.type === 'urgent').length} items</span>
+                    </div>
+            `;
+            
+            data.expiringProducts
+                .filter(p => p.type === 'urgent')
+                .forEach(product => {
+                    const expiryText = formatExpiryDate(product.expiryDate);
+                    html += `
+                        <div class="notification-item urgent" style="background: #fdf3f2; border-left: 4px solid #e74c3c; border-radius: 10px; padding: 15px; margin-bottom: 8px; cursor: pointer;" onclick="window.location.href='inventory.html'">
+                            <div style="display: flex; align-items: flex-start; gap: 12px;">
+                                <div style="width: 36px; height: 36px; background: rgba(231, 76, 60, 0.1); border-radius: 8px; display: flex; align-items: center; justify-content: center;">
+                                    <i class="fas fa-exclamation-triangle" style="color: #e74c3c; font-size: 16px;"></i>
+                                </div>
+                                <div style="flex: 1;">
+                                    <div style="font-weight: 600; color: #2c3e50; margin-bottom: 4px;">${product.name}</div>
+                                    <div style="font-size: 12px; color: #7f8c8d; display: flex; gap: 15px; flex-wrap: wrap;">
+                                        <span><i class="fas fa-barcode"></i> ${product.serial || 'N/A'}</span>
+                                        <span><i class="far fa-clock"></i> Expires ${expiryText}</span>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    `;
+                });
+            
+            html += `</div>`;
+        }
+        
+        // Warning expiring items
+        if (data.expiringProducts.filter(p => p.type === 'warning').length > 0) {
+            html += `
+                <div style="margin-bottom: 20px;">
+                    <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; padding: 0 5px;">
+                        <div style="display: flex; align-items: center; gap: 8px;">
+                            <div style="width: 8px; height: 8px; background: #f39c12; border-radius: 50%;"></div>
+                            <h4 style="margin: 0; font-size: 14px; color: #f39c12; font-weight: 600;">Expiring Soon</h4>
+                        </div>
+                        <span style="background: #fef9e7; color: #f39c12; padding: 4px 10px; border-radius: 20px; font-size: 11px; font-weight: 600;">${data.expiringProducts.filter(p => p.type === 'warning').length} items</span>
+                    </div>
+            `;
+            
+            data.expiringProducts
+                .filter(p => p.type === 'warning')
+                .forEach(product => {
+                    const expiryText = formatExpiryDate(product.expiryDate);
+                    html += `
+                        <div class="notification-item warning" style="background: #fef9e7; border-left: 4px solid #f39c12; border-radius: 10px; padding: 15px; margin-bottom: 8px; cursor: pointer;" onclick="window.location.href='inventory.html'">
+                            <div style="display: flex; align-items: flex-start; gap: 12px;">
+                                <div style="width: 36px; height: 36px; background: rgba(243, 156, 18, 0.1); border-radius: 8px; display: flex; align-items: center; justify-content: center;">
+                                    <i class="fas fa-clock" style="color: #f39c12; font-size: 16px;"></i>
+                                </div>
+                                <div style="flex: 1;">
+                                    <div style="font-weight: 600; color: #2c3e50; margin-bottom: 4px;">${product.name}</div>
+                                    <div style="font-size: 12px; color: #7f8c8d; display: flex; gap: 15px; flex-wrap: wrap;">
+                                        <span><i class="fas fa-barcode"></i> ${product.serial || 'N/A'}</span>
+                                        <span><i class="far fa-clock"></i> Expires ${expiryText}</span>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    `;
+                });
+            
+            html += `</div>`;
+        }
+        
+        // Low stock items
+        if (data.lowStockProducts.length > 0) {
+            html += `
+                <div style="margin-bottom: 20px;">
+                    <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; padding: 0 5px;">
+                        <div style="display: flex; align-items: center; gap: 8px;">
+                            <div style="width: 8px; height: 8px; background: #3498db; border-radius: 50%;"></div>
+                            <h4 style="margin: 0; font-size: 14px; color: #3498db; font-weight: 600;">Low Stock Alert</h4>
+                        </div>
+                        <span style="background: #e8f4fd; color: #3498db; padding: 4px 10px; border-radius: 20px; font-size: 11px; font-weight: 600;">${data.lowStockProducts.length} items</span>
+                    </div>
+            `;
+            
+            data.lowStockProducts.forEach(product => {
+                const percentRemaining = Math.round((product.stock / product.threshold) * 100);
+                const barColor = percentRemaining < 20 ? '#e74c3c' : (percentRemaining < 50 ? '#f39c12' : '#3498db');
+                
+                html += `
+                    <div class="notification-item low-stock" style="background: #e8f4fd; border-left: 4px solid #3498db; border-radius: 10px; padding: 15px; margin-bottom: 8px; cursor: pointer;" onclick="window.location.href='inventory.html'">
+                        <div style="display: flex; align-items: flex-start; gap: 12px;">
+                            <div style="width: 36px; height: 36px; background: rgba(52, 152, 219, 0.1); border-radius: 8px; display: flex; align-items: center; justify-content: center;">
+                                <i class="fas fa-boxes" style="color: #3498db; font-size: 16px;"></i>
+                            </div>
+                            <div style="flex: 1;">
+                                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
+                                    <span style="font-weight: 600; color: #2c3e50;">${product.name}</span>
+                                    <span style="background: ${barColor}; color: white; padding: 2px 8px; border-radius: 12px; font-size: 10px; font-weight: 600;">${percentRemaining}%</span>
+                                </div>
+                                <div style="font-size: 12px; color: #7f8c8d; margin-bottom: 8px;">
+                                    Stock: ${product.stock} / ${product.threshold} units
+                                </div>
+                                <div style="width: 100%; height: 6px; background: #e0e0e0; border-radius: 3px; overflow: hidden;">
+                                    <div style="width: ${percentRemaining}%; height: 100%; background: ${barColor}; border-radius: 3px; transition: width 0.3s ease;"></div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                `;
+            });
+            
+            html += `</div>`;
+        }
+    }
+    
+    popupBody.innerHTML = html;
+}
+
 // ==================== DISCOUNT OPTIONS SETUP ====================
 
 function setupDiscountOptions() {
     const discountContainer = document.querySelector('.discount-container');
     if (!discountContainer) return;
     
-    // Replace the existing select with radio buttons
     const discountHTML = `
         <div class="discount-options">
             <label class="discount-option">
@@ -127,7 +714,7 @@ function setupDiscountOptions() {
             <label class="discount-option">
                 <input type="radio" name="discountType" value="yakap">
                 <span class="discount-option-label">
-                    <i class="fas fa-heart"></i> YAKAP (10%)
+                    <i class="fas fa-heart"></i> YAKAP (30%)
                 </span>
             </label>
         </div>
@@ -135,25 +722,19 @@ function setupDiscountOptions() {
     
     discountContainer.innerHTML = discountHTML;
     
-    // Add event listeners to radio buttons
     document.querySelectorAll('input[name="discountType"]').forEach(radio => {
         radio.addEventListener('change', (e) => {
             currentDiscountType = e.target.value;
-            if (currentDiscountType === 'none') {
-                currentDiscount = 0;
-            } else {
-                currentDiscount = DISCOUNT_RATES[currentDiscountType];
-            }
+            currentDiscount = currentDiscountType === 'none' ? 0 : DISCOUNT_RATES[currentDiscountType];
             updateCartDisplay();
             if (document.getElementById('checkoutModal').style.display === 'block') {
                 updateCheckoutModal();
             }
             
-            // Show notification
             if (currentDiscountType === 'seniorPWD') {
                 showNotification('Senior/PWD discount applied (20%)', 'info');
             } else if (currentDiscountType === 'yakap') {
-                showNotification('YAKAP discount applied (10%)', 'info');
+                showNotification('YAKAP discount applied (30%)', 'info');
             }
         });
     });
@@ -162,7 +743,6 @@ function setupDiscountOptions() {
 // ==================== SELL EXPIRING FIRST TOGGLE ====================
 
 function setupSellExpiringToggle() {
-    // Create toggle if it doesn't exist
     const cartHeader = document.querySelector('.cart-header');
     if (cartHeader && !document.getElementById('sellExpiringToggle')) {
         const toggleHTML = `
@@ -187,6 +767,19 @@ function setupSellExpiringToggle() {
     }
 }
 
+// Optimized function to get stock items with caching
+async function getStockItemsWithCache(forceRefresh = false) {
+    const now = Date.now();
+    if (!forceRefresh && stockItemsCache && (now - lastStockFetch) < STOCK_CACHE_DURATION) {
+        return stockItemsCache;
+    }
+    
+    const snapshot = await getDocs(collection(db, "stock_items"));
+    stockItemsCache = snapshot;
+    lastStockFetch = now;
+    return snapshot;
+}
+
 // ==================== POS FUNCTIONS WITH EXPIRY WARNINGS ====================
 
 function loadProducts() {
@@ -202,81 +795,80 @@ function loadProducts() {
         
         const productsRef = collection(db, "products");
         
+        // Use a debounced update to prevent too frequent renders
+        let updateTimeout;
         unsubscribeProducts = onSnapshot(productsRef, async (snapshot) => {
-            products = [];
+            if (updateTimeout) clearTimeout(updateTimeout);
             
-            if (snapshot.empty) {
-                productsGrid.innerHTML = '<p class="no-data">No products available</p>';
-                return;
-            }
-            
-            // Get all stock items to check expiry
-            const stockItemsSnapshot = await getDocs(collection(db, "stock_items"));
-            const today = new Date();
-            today.setHours(0, 0, 0, 0);
-            const thirtyDaysFromNow = new Date(today);
-            thirtyDaysFromNow.setDate(thirtyDaysFromNow.getDate() + 30);
-            
-            // Create a map of product expiry info
-            const expiryMap = new Map();
-            
-            stockItemsSnapshot.forEach(doc => {
-                const item = doc.data();
-                if (item.expiryDate && item.status === 'available') {
-                    // Convert Timestamp to Date
-                    let expiryDate;
-                    if (item.expiryDate.toDate) {
-                        expiryDate = item.expiryDate.toDate();
-                    } else {
-                        expiryDate = new Date(item.expiryDate);
-                    }
-                    expiryDate.setHours(0, 0, 0, 0);
-                    
-                    if (expiryDate <= thirtyDaysFromNow) {
-                        const productId = item.productId;
-                        if (!expiryMap.has(productId)) {
-                            expiryMap.set(productId, {
-                                count: 0,
-                                earliestExpiry: expiryDate,
-                                items: [] // Store individual expiring items
+            updateTimeout = setTimeout(async () => {
+                products = [];
+                
+                if (snapshot.empty) {
+                    productsGrid.innerHTML = '<p class="no-data">No products available</p>';
+                    return;
+                }
+                
+                // Get stock items with cache
+                const stockItemsSnapshot = await getStockItemsWithCache();
+                const today = new Date();
+                today.setHours(0, 0, 0, 0);
+                const thirtyDaysFromNow = new Date(today);
+                thirtyDaysFromNow.setDate(thirtyDaysFromNow.getDate() + 30);
+                
+                // Create expiry map in one pass
+                const expiryMap = new Map();
+                
+                stockItemsSnapshot.forEach(doc => {
+                    const item = doc.data();
+                    if (item.expiryDate && item.status === 'available') {
+                        const expiryDate = item.expiryDate.toDate();
+                        expiryDate.setHours(0, 0, 0, 0);
+                        
+                        if (expiryDate <= thirtyDaysFromNow) {
+                            const productId = item.productId;
+                            if (!expiryMap.has(productId)) {
+                                expiryMap.set(productId, {
+                                    count: 0,
+                                    earliestExpiry: expiryDate,
+                                    items: []
+                                });
+                            }
+                            const productExpiry = expiryMap.get(productId);
+                            productExpiry.count++;
+                            productExpiry.items.push({
+                                id: doc.id,
+                                expiryDate: expiryDate,
+                                batchNumber: item.batchNumber,
+                                serialNumber: item.serialNumber
                             });
-                        }
-                        const productExpiry = expiryMap.get(productId);
-                        productExpiry.count++;
-                        productExpiry.items.push({
-                            id: doc.id,
-                            expiryDate: expiryDate,
-                            batchNumber: item.batchNumber,
-                            serialNumber: item.serialNumber
-                        });
-                        if (expiryDate < productExpiry.earliestExpiry) {
-                            productExpiry.earliestExpiry = expiryDate;
+                            if (expiryDate < productExpiry.earliestExpiry) {
+                                productExpiry.earliestExpiry = expiryDate;
+                            }
                         }
                     }
-                }
-            });
-            
-            snapshot.forEach(doc => {
-                const product = { id: doc.id, ...doc.data() };
-                // Add expiry info to product
-                if (expiryMap.has(product.id)) {
-                    product.expiringCount = expiryMap.get(product.id).count;
-                    product.earliestExpiry = expiryMap.get(product.id).earliestExpiry;
-                    product.expiringItems = expiryMap.get(product.id).items;
-                } else {
-                    product.expiringCount = 0;
-                    product.expiringItems = [];
-                }
-                products.push(product);
-            });
-            
-            // Clear filters
-            document.getElementById('posSearch').value = '';
-            document.getElementById('posCategoryFilter').value = '';
-            
-            displayProducts(products);
-            updateCartDisplay();
-            
+                });
+                
+                // Build products array
+                snapshot.forEach(doc => {
+                    const product = { id: doc.id, ...doc.data() };
+                    if (expiryMap.has(product.id)) {
+                        product.expiringCount = expiryMap.get(product.id).count;
+                        product.earliestExpiry = expiryMap.get(product.id).earliestExpiry;
+                        product.expiringItems = expiryMap.get(product.id).items;
+                    } else {
+                        product.expiringCount = 0;
+                        product.expiringItems = [];
+                    }
+                    products.push(product);
+                });
+                
+                // Clear filters
+                document.getElementById('posSearch').value = '';
+                document.getElementById('posCategoryFilter').value = '';
+                
+                displayProducts(products);
+                updateCartDisplay();
+            }, 300); // Debounce updates
         }, (error) => {
             console.error("Error in real-time listener:", error);
             productsGrid.innerHTML = '<p class="error">Error loading products</p>';
@@ -296,6 +888,9 @@ function displayProducts(productsToShow) {
     const today = new Date();
     today.setHours(0, 0, 0, 0);
     
+    // Use document fragment for batch DOM updates
+    const fragment = document.createDocumentFragment();
+    
     productsToShow.forEach(product => {
         const isOutOfStock = product.stock <= 0;
         const discountStatus = product.discountable === false ? 'non-discountable' : '';
@@ -309,11 +904,9 @@ function displayProducts(productsToShow) {
             discountBadge = '<span class="non-discount-badge"><i class="fas fa-ban"></i> No Discount</span>';
         }
         
-        // Display brand and generic names
         const brandName = product.brand || product.name || 'Unnamed';
         const genericName = product.generic ? `<small class="generic-name">${product.generic}</small>` : '';
         
-        // Add expiry warning if product has items expiring soon
         let expiryWarning = '';
         if (product.expiringCount > 0) {
             const daysUntil = Math.ceil((product.earliestExpiry - today) / (1000 * 60 * 60 * 24));
@@ -350,15 +943,17 @@ function displayProducts(productsToShow) {
                 ${isOutOfStock ? 'Unavailable' : 'Add to Cart'}
             </button>
         `;
-        productsGrid.appendChild(productCard);
+        fragment.appendChild(productCard);
     });
+    
+    productsGrid.appendChild(fragment);
     
     document.querySelectorAll('.add-to-cart:not([disabled])').forEach(btn => {
         btn.addEventListener('click', () => addToCart(btn.dataset.id));
     });
 }
 
-// Filter functions
+// Filter functions with debounce
 const posSearch = document.getElementById('posSearch');
 if (posSearch) {
     posSearch.addEventListener('input', debounce(() => filterPOSProducts(), 300));
@@ -383,9 +978,9 @@ function filterPOSProducts() {
     
     if (searchTerm) {
         filteredProducts = filteredProducts.filter(p => 
-            p.brand?.toLowerCase().includes(searchTerm) || 
-            p.generic?.toLowerCase().includes(searchTerm) ||
-            p.code?.toLowerCase().includes(searchTerm)
+            (p.brand?.toLowerCase().includes(searchTerm) || 
+             p.generic?.toLowerCase().includes(searchTerm) ||
+             p.code?.toLowerCase().includes(searchTerm))
         );
     }
     
@@ -400,7 +995,7 @@ function debounce(func, wait) {
     };
 }
 
-// Cart Functions with Expiry Warnings
+// Cart Functions
 function addToCart(productId) {
     const product = products.find(p => p.id === productId);
     
@@ -463,6 +1058,7 @@ function updateCartDisplay() {
     
     if (!cartItems) return;
     
+    // Clear cart first
     cartItems.innerHTML = '';
     let subtotal = 0;
     
@@ -474,7 +1070,7 @@ function updateCartDisplay() {
         return;
     }
     
-    // Add discount info display
+    // Update discount info
     if (discountInfoEl) {
         if (currentDiscountType !== 'none') {
             const discountName = currentDiscountType === 'seniorPWD' ? 'Senior/PWD' : 'YAKAP';
@@ -488,6 +1084,10 @@ function updateCartDisplay() {
             discountInfoEl.innerHTML = '';
         }
     }
+    
+    // Use fragment for batch DOM updates
+    const fragment = document.createDocumentFragment();
+    const today = new Date();
     
     cart.forEach((item, index) => {
         const itemTotal = item.price * item.quantity;
@@ -505,13 +1105,10 @@ function updateCartDisplay() {
             discountableBadge = '<span class="non-discount-badge-small"><i class="fas fa-ban"></i> No Discount</span>';
         }
         
-        // Add generic name if available
         const genericDisplay = item.generic ? `<small class="generic-cart">${item.generic}</small>` : '';
         
-        // Add expiry warning in cart if item has expiring items
         let expiryWarning = '';
         if (item.expiringCount > 0) {
-            const today = new Date();
             const daysUntil = Math.ceil((item.earliestExpiry - today) / (1000 * 60 * 60 * 24));
             let warningClass = daysUntil <= 7 ? 'expiry-critical-text' : 'expiry-warning-text';
             expiryWarning = `<small class="${warningClass}">⚠️ ${item.expiringCount} expiring in ${daysUntil} days</small>`;
@@ -542,8 +1139,10 @@ function updateCartDisplay() {
                 </button>
             </div>
         `;
-        cartItems.appendChild(cartItem);
+        fragment.appendChild(cartItem);
     });
+    
+    cartItems.appendChild(fragment);
     
     // Add event listeners
     document.querySelectorAll('.decrease-qty').forEach(btn => {
@@ -581,9 +1180,7 @@ function updateCartDisplay() {
         });
     });
     
-    // Calculate totals with discount
-    const discountPercentage = currentDiscount;
-    
+    // Calculate totals
     let discountableSubtotal = 0;
     let nonDiscountableSubtotal = 0;
     
@@ -596,7 +1193,7 @@ function updateCartDisplay() {
         }
     });
     
-    const discountAmount = discountableSubtotal * (discountPercentage / 100);
+    const discountAmount = discountableSubtotal * (currentDiscount / 100);
     const grandTotal = discountableSubtotal + nonDiscountableSubtotal - discountAmount;
     
     if (subtotalEl) subtotalEl.textContent = `₱${(discountableSubtotal + nonDiscountableSubtotal).toFixed(2)}`;
@@ -607,9 +1204,6 @@ function updateCartDisplay() {
 
 async function deductStockWithExpiryPriority(productId, quantityToDeduct) {
     try {
-        console.log(`Deducting ${quantityToDeduct} units from product ${productId}`);
-        
-        // Get all available stock items for this product
         const stockItemsQuery = query(
             collection(db, "stock_items"),
             where("productId", "==", productId),
@@ -619,23 +1213,16 @@ async function deductStockWithExpiryPriority(productId, quantityToDeduct) {
         const stockItemsSnapshot = await getDocs(stockItemsQuery);
         
         if (stockItemsSnapshot.empty) {
-            console.log(`No stock items found for product ${productId}`);
             return false;
         }
         
-        console.log(`Found ${stockItemsSnapshot.size} available stock items`);
-        
-        // Convert to array and sort by expiry date
+        // Convert to array and sort
         const stockItems = [];
         stockItemsSnapshot.forEach(doc => {
             const item = doc.data();
             let expiryDate = null;
             if (item.expiryDate) {
-                if (item.expiryDate.toDate) {
-                    expiryDate = item.expiryDate.toDate();
-                } else {
-                    expiryDate = new Date(item.expiryDate);
-                }
+                expiryDate = item.expiryDate.toDate();
                 expiryDate.setHours(0, 0, 0, 0);
             }
             
@@ -646,88 +1233,52 @@ async function deductStockWithExpiryPriority(productId, quantityToDeduct) {
             });
         });
         
-        // Sort based on sellExpiringFirst setting
+        // Sort based on setting
         if (sellExpiringFirst) {
-            // FEFO: Items with expiry date first (earliest first), then items without expiry
             stockItems.sort((a, b) => {
-                if (a.expiryDate && b.expiryDate) {
-                    return a.expiryDate - b.expiryDate;
-                } else if (a.expiryDate && !b.expiryDate) {
-                    return -1; // a has expiry, b doesn't - a comes first
-                } else if (!a.expiryDate && b.expiryDate) {
-                    return 1; // b has expiry, a doesn't - b comes first
-                } else {
-                    return 0; // both have no expiry
-                }
-            });
-            
-            console.log(`FEFO mode: Deducting expiring items first`);
-        } else {
-            // FIFO: Sort by creation date (oldest first)
-            stockItems.sort((a, b) => {
-                if (a.createdAt && b.createdAt) {
-                    return a.createdAt.seconds - b.createdAt.seconds;
-                }
+                if (a.expiryDate && b.expiryDate) return a.expiryDate - b.expiryDate;
+                if (a.expiryDate && !b.expiryDate) return -1;
+                if (!a.expiryDate && b.expiryDate) return 1;
                 return 0;
             });
-            console.log(`FIFO mode: Deducting oldest items first`);
+        } else {
+            stockItems.sort((a, b) => (a.createdAt?.seconds || 0) - (b.createdAt?.seconds || 0));
         }
         
         let remainingToDeduct = quantityToDeduct;
         const batch = writeBatch(db);
-        const deductedItems = [];
         
         for (const stockItem of stockItems) {
             if (remainingToDeduct <= 0) break;
             
-            // Each stock_items document represents 1 item
             const stockItemRef = doc(db, "stock_items", stockItem.id);
-            
-            // Mark this stock item as sold
             batch.update(stockItemRef, {
                 status: 'sold',
                 soldDate: Timestamp.now(),
                 soldBy: loggedInUserId
             });
             
-            deductedItems.push({
-                id: stockItem.id,
-                expiryDate: stockItem.expiryDate,
-                batchNumber: stockItem.batchNumber,
-                serialNumber: stockItem.serialNumber
-            });
-            
             remainingToDeduct--;
         }
         
         if (remainingToDeduct > 0) {
-            console.warn(`Could not fully deduct ${quantityToDeduct} units. Remaining: ${remainingToDeduct}`);
             return false;
         }
         
-        // Execute all batch updates
         await batch.commit();
         
-        // Log which items were deducted (for debugging)
-        if (deductedItems.length > 0) {
-            const expiringDeducted = deductedItems.filter(i => i.expiryDate).length;
-            console.log(`Successfully deducted ${deductedItems.length} items (${expiringDeducted} with expiry dates)`);
-            
-            // Show notification about expiring items sold if applicable
-            if (sellExpiringFirst && expiringDeducted > 0) {
-                showNotification(`Sold ${expiringDeducted} expiring item(s) first`, 'info');
-            }
-        }
+        // Invalidate stock cache
+        stockItemsCache = null;
         
         return true;
         
     } catch (error) {
-        console.error("Error deducting stock with expiry priority:", error);
+        console.error("Error deducting stock:", error);
         throw error;
     }
 }
 
-// Checkout Functions with Expiry Priority
+// Checkout Functions
 const checkoutBtn = document.getElementById('checkoutBtn');
 if (checkoutBtn) {
     checkoutBtn.addEventListener('click', () => {
@@ -736,30 +1287,23 @@ if (checkoutBtn) {
             return;
         }
         
-        // Check for expiring items before checkout
         const expiringItems = cart.filter(item => item.expiringCount > 0);
         if (expiringItems.length > 0 && sellExpiringFirst) {
-            const confirmCheckout = confirm('Sell Expiring First is enabled. These expiring items will be prioritized in the sale. Continue?');
-            if (!confirmCheckout) return;
+            if (!confirm('Sell Expiring First is enabled. These expiring items will be prioritized in the sale. Continue?')) return;
         } else if (expiringItems.length > 0) {
-            const confirmCheckout = confirm('Some items in your cart have products that are expiring soon. Do you want to continue?');
-            if (!confirmCheckout) return;
+            if (!confirm('Some items in your cart have products that are expiring soon. Do you want to continue?')) return;
         }
         
-        let hasStockIssue = false;
         for (const item of cart) {
             const product = products.find(p => p.id === item.id);
             if (!product || product.stock < item.quantity) {
-                hasStockIssue = true;
                 showNotification(`Insufficient stock for ${item.brand}!`, 'error');
-                break;
+                return;
             }
         }
         
-        if (!hasStockIssue) {
-            document.getElementById('checkoutModal').style.display = 'block';
-            updateCheckoutModal();
-        }
+        document.getElementById('checkoutModal').style.display = 'block';
+        updateCheckoutModal();
     });
 }
 
@@ -770,8 +1314,8 @@ if (clearCartBtn) {
             cart = [];
             currentDiscountType = 'none';
             currentDiscount = 0;
-            // Reset radio buttons
-            document.querySelector('input[name="discountType"][value="none"]').checked = true;
+            const noneRadio = document.querySelector('input[name="discountType"][value="none"]');
+            if (noneRadio) noneRadio.checked = true;
             updateCartDisplay();
             showNotification('Cart cleared', 'info');
         }
@@ -792,6 +1336,8 @@ function updateCheckoutModal() {
     let nonDiscountableSubtotal = 0;
     checkoutItems.innerHTML = '';
     
+    const fragment = document.createDocumentFragment();
+    
     cart.forEach(item => {
         const itemTotal = item.price * item.quantity;
         if (item.discountable !== false) {
@@ -808,7 +1354,6 @@ function updateCheckoutModal() {
             expiryNote = '<small class="expiry-checkout-note">(Expiring items prioritized)</small>';
         }
         
-        // Show both brand and generic in checkout
         const displayName = item.generic ? `${item.brand} (${item.generic})` : item.brand;
         
         itemDiv.innerHTML = `
@@ -819,15 +1364,16 @@ function updateCheckoutModal() {
             </div>
             <span class="product-total">₱${itemTotal.toFixed(2)}</span>
         `;
-        checkoutItems.appendChild(itemDiv);
+        fragment.appendChild(itemDiv);
     });
+    
+    checkoutItems.appendChild(fragment);
     
     const discountPercentage = currentDiscount;
     const discountAmount = discountableSubtotal * (discountPercentage / 100);
     const subtotal = discountableSubtotal + nonDiscountableSubtotal;
     const grandTotal = subtotal - discountAmount;
     
-    // Display discount type
     if (checkoutDiscountType) {
         if (currentDiscountType !== 'none') {
             const discountName = currentDiscountType === 'seniorPWD' ? 'Senior/PWD' : 'YAKAP';
@@ -847,10 +1393,8 @@ function updateCheckoutModal() {
     if (checkoutDiscountAmount) checkoutDiscountAmount.textContent = `-₱${discountAmount.toFixed(2)}`;
     if (checkoutTotal) checkoutTotal.textContent = `₱${grandTotal.toFixed(2)}`;
     
-    // Add toggle status to checkout modal
     const paymentSection = document.querySelector('.payment-section');
     if (paymentSection) {
-        // Remove existing note if any
         const existingNote = document.getElementById('checkoutExpiryNote');
         if (existingNote) existingNote.remove();
         
@@ -907,7 +1451,6 @@ if (processPaymentBtn) {
             let discountableSubtotal = 0;
             let nonDiscountableSubtotal = 0;
             
-            // Calculate totals first
             cart.forEach(item => {
                 const itemTotal = item.price * item.quantity;
                 if (item.discountable !== false) {
@@ -922,15 +1465,12 @@ if (processPaymentBtn) {
             const subtotal = discountableSubtotal + nonDiscountableSubtotal;
             const totalAmount = subtotal - discountAmount;
             
-            // Calculate which items were expiring at time of sale
             const today = new Date();
             today.setHours(0, 0, 0, 0);
             const thirtyDaysFromNow = new Date(today);
             thirtyDaysFromNow.setDate(thirtyDaysFromNow.getDate() + 30);
             
-            // Process items with proper discount calculation
             const processedItems = cart.map(item => {
-                // Check if this item has expiring stock
                 let wasExpiring = false;
                 
                 if (item.expiringItems && item.expiringItems.length > 0) {
@@ -944,12 +1484,10 @@ if (processPaymentBtn) {
                 
                 const itemOriginalTotal = item.price * item.quantity;
                 
-                // Calculate discounted price for this item if it's discountable
                 let itemDiscountedTotal = itemOriginalTotal;
                 let itemDiscountAmount = 0;
                 
                 if (item.discountable !== false && discountPercentage > 0) {
-                    // Apply discount proportionally based on the item's contribution to discountable subtotal
                     const itemShare = itemOriginalTotal / discountableSubtotal;
                     itemDiscountAmount = discountAmount * itemShare;
                     itemDiscountedTotal = itemOriginalTotal - itemDiscountAmount;
@@ -959,11 +1497,11 @@ if (processPaymentBtn) {
                     productId: item.id,
                     brand: item.brand,
                     generic: item.generic,
-                    price: item.price, // Original unit price
+                    price: item.price,
                     quantity: item.quantity,
-                    originalTotal: itemOriginalTotal, // Total before discount
-                    discountAmount: itemDiscountAmount, // Discount applied to this item
-                    subtotal: itemDiscountedTotal, // Total after discount
+                    originalTotal: itemOriginalTotal,
+                    discountAmount: itemDiscountAmount,
+                    subtotal: itemDiscountedTotal,
                     discountable: item.discountable !== false,
                     wasExpiring: wasExpiring,
                     expiryCount: item.expiringCount || 0
@@ -991,56 +1529,17 @@ if (processPaymentBtn) {
                 hadExpiringItems: cart.some(item => item.expiringCount > 0)
             };
             
-            console.log("Sale Data being saved:", saleData); // Debug log
-            
-            // First, save the sale
-            await addDoc(collection(db, "sales"), saleData);
-            
-            // Then update stock using expiry priority based on toggle
-            for (const item of cart) {
-                const productRef = doc(db, "products", item.id);
-                const productDoc = await getDoc(productRef);
-                
-                if (productDoc.exists()) {
-                    const currentStock = productDoc.data().stock;
-                    const newStock = currentStock - item.quantity;
-                    
-                    // Deduct from stock_items with expiry priority
-                    const deductionSuccess = await deductStockWithExpiryPriority(item.id, item.quantity);
-                    
-                    if (!deductionSuccess) {
-                        throw new Error(`Failed to deduct stock for ${item.brand}`);
-                    }
-                    
-                    // Update product total stock
-                    await updateDoc(productRef, {
-                        stock: newStock,
-                        lastUpdated: Timestamp.now()
-                    });
-                    
-                    await addDoc(collection(db, "activities"), {
-                        type: 'stock',
-                        description: `${item.brand} stock updated: ${currentStock} → ${newStock} (${sellExpiringFirst ? 'FEFO' : 'FIFO'} mode)`,
-                        timestamp: Timestamp.now(),
-                        userId: loggedInUserId
-                    });
-                    
-                    if (newStock === 0) {
-                        await addDoc(collection(db, "activities"), {
-                            type: 'stock',
-                            description: `${item.brand} is now out of stock`,
-                            timestamp: Timestamp.now(),
-                            userId: loggedInUserId
-                        });
-                    }
-                }
-            }
+            // Save sale and update stock in parallel
+            await Promise.all([
+                addDoc(collection(db, "sales"), saleData),
+                ...cart.map(item => updateProductStock(item))
+            ]);
             
             let discountText = '';
             if (currentDiscountType === 'seniorPWD') {
                 discountText = ' (Senior/PWD 20%)';
             } else if (currentDiscountType === 'yakap') {
-                discountText = ' (YAKAP 10%)';
+                discountText = ' (YAKAP 30%)';
             }
             
             let modeText = sellExpiringFirst ? ' (FEFO - Expiring first)' : ' (FIFO)';
@@ -1057,7 +1556,6 @@ if (processPaymentBtn) {
             cart = [];
             currentDiscountType = 'none';
             currentDiscount = 0;
-            // Reset radio buttons
             const noneRadio = document.querySelector('input[name="discountType"][value="none"]');
             if (noneRadio) noneRadio.checked = true;
             updateCartDisplay();
@@ -1066,7 +1564,6 @@ if (processPaymentBtn) {
             document.getElementById('amountTendered').value = '';
             document.getElementById('changeAmount').textContent = '₱0.00';
             
-            // Remove checkout expiry note
             const checkoutNote = document.getElementById('checkoutExpiryNote');
             if (checkoutNote) checkoutNote.remove();
             
@@ -1080,6 +1577,45 @@ if (processPaymentBtn) {
         }
     });
 }
+
+// Helper function to update product stock
+async function updateProductStock(item) {
+    const productRef = doc(db, "products", item.id);
+    const productDoc = await getDoc(productRef);
+    
+    if (productDoc.exists()) {
+        const currentStock = productDoc.data().stock;
+        const newStock = currentStock - item.quantity;
+        
+        const deductionSuccess = await deductStockWithExpiryPriority(item.id, item.quantity);
+        
+        if (!deductionSuccess) {
+            throw new Error(`Failed to deduct stock for ${item.brand}`);
+        }
+        
+        await updateDoc(productRef, {
+            stock: newStock,
+            lastUpdated: Timestamp.now()
+        });
+        
+        await addDoc(collection(db, "activities"), {
+            type: 'stock',
+            description: `${item.brand} stock updated: ${currentStock} → ${newStock} (${sellExpiringFirst ? 'FEFO' : 'FIFO'} mode)`,
+            timestamp: Timestamp.now(),
+            userId: loggedInUserId
+        });
+        
+        if (newStock === 0) {
+            await addDoc(collection(db, "activities"), {
+                type: 'stock',
+                description: `${item.brand} is now out of stock`,
+                timestamp: Timestamp.now(),
+                userId: loggedInUserId
+            });
+        }
+    }
+}
+
 async function generateInvoiceNumber() {
     try {
         const today = new Date();
@@ -1199,7 +1735,7 @@ function setupEventListeners() {
     });
 }
 
-// Function to return a sold item back to inventory
+// Return function
 window.returnSoldItem = async function(stockItemId) {
     if (!confirm('Return this item to available stock? This will undo the sale.')) return;
     
@@ -1221,7 +1757,6 @@ window.returnSoldItem = async function(stockItemId) {
         
         const batch = writeBatch(db);
         
-        // Return the item to available
         batch.update(stockItemRef, {
             status: 'available',
             soldDate: null,
@@ -1230,7 +1765,6 @@ window.returnSoldItem = async function(stockItemId) {
             returnedBy: loggedInUserId
         });
         
-        // Update product stock if product exists
         if (stockItem.productId) {
             const availableStockQuery = query(
                 collection(db, "stock_items"),
@@ -1250,7 +1784,6 @@ window.returnSoldItem = async function(stockItemId) {
             }
         }
         
-        // Create return record
         const returnRef = doc(collection(db, "returns"));
         batch.set(returnRef, {
             stockItemId: stockItemId,
@@ -1265,14 +1798,15 @@ window.returnSoldItem = async function(stockItemId) {
         
         await batch.commit();
         
+        // Invalidate stock cache
+        stockItemsCache = null;
+        
         showNotification('Item returned to inventory successfully', 'success');
         
-        // Refresh views
         if (typeof loadInventory === 'function') {
             loadInventory();
         }
         
-        // Close modal if open
         const modal = document.getElementById('stockItemsModal');
         if (modal && modal.style.display === 'block') {
             modal.style.display = 'none';

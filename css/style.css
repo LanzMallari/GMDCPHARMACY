@@ -9375,4 +9375,50 @@ td, tr, tbody, table {
     .summary-row.total {
         font-size: 14px;
     }
+}/* Category Badge Styles */
+.category-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 4px 10px;
+    border-radius: 20px;
+    font-size: 12px;
+    font-weight: 600;
+}
+
+.category-badge.rx {
+    background: #e74c3c;
+    color: white;
+}
+
+.category-badge.otc {
+    background: #27ae60;
+    color: white;
+}
+
+.category-badge.food {
+    background: #f39c12;
+    color: white;
+}
+
+.category-badge.general {
+    background: #3498db;
+    color: white;
+}
+
+/* Low stock threshold info for different categories */
+.threshold-info.rx {
+    color: #e74c3c;
+}
+
+.threshold-info.otc {
+    color: #27ae60;
+}
+
+.threshold-info.food {
+    color: #f39c12;
+}
+
+.threshold-info.general {
+    color: #3498db;
 }

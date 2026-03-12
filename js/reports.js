@@ -10,6 +10,14 @@ if (!loggedInUserId) {
 let reportChart = null;
 let currentDiscountFilter = 'all'; // 'all', 'seniorPWD', 'yakap'
 
+// Cache for report data
+let reportCache = {
+    productSales: null,
+    fastMoving: null,
+    lastFetch: 0
+};
+const CACHE_DURATION = 60000; // 1 minute cache
+
 // Initialize
 document.addEventListener('DOMContentLoaded', () => {
     initializeReports();
@@ -134,7 +142,7 @@ function populateYearDropdown() {
     }
 }
 
-async function generateReport() {
+async function generateReport(forceRefresh = false) {
     try {
         const reportContent = document.getElementById('reportStats');
         const chartCanvas = document.getElementById('reportChart');
@@ -143,7 +151,7 @@ async function generateReport() {
         
         if (!reportContent || !chartCanvas || !breakdownContainer || !fastMovingContainer) return;
         
-        // Show loading
+        // Show loading indicators
         breakdownContainer.innerHTML = '<div class="loading">Loading product sales data...</div>';
         fastMovingContainer.innerHTML = '<div class="loading">Analyzing fast moving products...</div>';
         
@@ -151,11 +159,16 @@ async function generateReport() {
         const selectedYear = parseInt(document.getElementById('reportYear')?.value || new Date().getFullYear());
         const period = document.getElementById('reportPeriod')?.value || 'daily';
         
-        let labels = [];
-        let data = [];
-        let totalSales = 0;
-        let totalTransactions = 0;
-        let totalDiscountAmount = 0;
+        // Check cache
+        const cacheKey = `${selectedMonth}-${selectedYear}`;
+        const now = Date.now();
+        if (!forceRefresh && reportCache.lastFetch === cacheKey && (now - reportCache.timestamp) < CACHE_DURATION) {
+            // Use cached data
+            displayReportFromCache(period, selectedMonth, selectedYear);
+            displayProductSalesBreakdown(reportCache.productSales, reportCache.totals);
+            displayFastMovingProducts(reportCache.fastMoving);
+            return;
+        }
         
         const startDate = new Date(selectedYear, selectedMonth, 1);
         startDate.setHours(0, 0, 0, 0);
@@ -163,6 +176,7 @@ async function generateReport() {
         const endDate = new Date(selectedYear, selectedMonth + 1, 1);
         endDate.setHours(0, 0, 0, 0);
         
+        // Fetch all sales data in one query
         const salesQuery = query(
             collection(db, "sales"),
             where("date", ">=", Timestamp.fromDate(startDate)),
@@ -172,75 +186,106 @@ async function generateReport() {
         
         const salesSnapshot = await getDocs(salesQuery);
         
+        // Process sales data
         const sales = [];
+        let totalSales = 0;
+        let totalTransactions = 0;
+        let totalDiscountAmount = 0;
+        
         salesSnapshot.forEach(doc => {
             const sale = doc.data();
             sales.push({ id: doc.id, ...sale });
+            totalSales += sale.total || 0;
+            totalTransactions++;
             totalDiscountAmount += sale.discountAmount || 0;
         });
         
-        switch(period) {
-            case 'daily':
-                const daysInMonth = new Date(selectedYear, selectedMonth + 1, 0).getDate();
-                const dailyData = new Array(daysInMonth).fill(0);
-                const dailyCount = new Array(daysInMonth).fill(0);
-                
-                sales.forEach(sale => {
-                    const saleDate = sale.date.toDate();
-                    const day = saleDate.getDate() - 1;
-                    if (day >= 0 && day < daysInMonth) {
-                        dailyData[day] += sale.total || 0;
-                        dailyCount[day]++;
-                    }
-                });
-                
-                labels = [];
-                for (let i = 1; i <= daysInMonth; i++) {
-                    labels.push(`${i}`);
-                }
-                data = dailyData;
-                totalSales = dailyData.reduce((sum, val) => sum + val, 0);
-                totalTransactions = dailyCount.reduce((sum, val) => sum + val, 0);
-                break;
-                
-            case 'weekly':
-                const weeksInMonth = 5;
-                const weeklyData = new Array(weeksInMonth).fill(0);
-                const weeklyCount = new Array(weeksInMonth).fill(0);
-                
-                sales.forEach(sale => {
-                    const saleDate = sale.date.toDate();
-                    const dayOfMonth = saleDate.getDate();
-                    const weekIndex = Math.floor((dayOfMonth - 1) / 7);
-                    if (weekIndex < weeksInMonth) {
-                        weeklyData[weekIndex] += sale.total || 0;
-                        weeklyCount[weekIndex]++;
-                    }
-                });
-                
-                labels = ['Week 1', 'Week 2', 'Week 3', 'Week 4', 'Week 5'];
-                data = weeklyData;
-                totalSales = weeklyData.reduce((sum, val) => sum + val, 0);
-                totalTransactions = weeklyCount.reduce((sum, val) => sum + val, 0);
-                break;
-                
-            case 'monthly':
-                // For monthly, we'll show the selected month only
-                labels = [new Date(selectedYear, selectedMonth, 1).toLocaleDateString('en-US', { month: 'long' })];
-                data = [totalSales];
-                break;
-        }
+        // Generate chart data based on period
+        const { labels, data } = generateChartData(sales, period, selectedYear, selectedMonth);
         
         const averageSale = totalTransactions > 0 ? totalSales / totalTransactions : 0;
         
+        // Update UI
         displayReport(period, labels, data, totalSales, totalTransactions, averageSale, totalDiscountAmount, selectedMonth, selectedYear);
         
-        await loadProductSalesBreakdown(selectedMonth, selectedYear);
-        await loadFastMovingProducts(selectedMonth, selectedYear);
+        // Load breakdown and fast moving in parallel
+        const [productSalesResult, fastMovingResult] = await Promise.all([
+            processProductSalesBreakdown(salesSnapshot),
+            processFastMovingProducts(selectedMonth, selectedYear)
+        ]);
+        
+        // Cache the results
+        reportCache = {
+            productSales: productSalesResult.productSalesArray,
+            totals: productSalesResult.totals,
+            fastMoving: fastMovingResult,
+            lastFetch: cacheKey,
+            timestamp: now
+        };
+        
+        displayProductSalesBreakdown(productSalesResult.productSalesArray, productSalesResult.totals);
+        displayFastMovingProducts(fastMovingResult);
         
     } catch (error) {
         console.error("Error generating report:", error);
         document.getElementById('reportStats').innerHTML = '<p class="error">Error generating report</p>';
+    }
+}
+
+function generateChartData(sales, period, year, month) {
+    let labels = [];
+    let data = [];
+    
+    switch(period) {
+        case 'daily':
+            const daysInMonth = new Date(year, month + 1, 0).getDate();
+            const dailyData = new Array(daysInMonth).fill(0);
+            
+            sales.forEach(sale => {
+                const saleDate = sale.date.toDate();
+                const day = saleDate.getDate() - 1;
+                if (day >= 0 && day < daysInMonth) {
+                    dailyData[day] += sale.total || 0;
+                }
+            });
+            
+            labels = Array.from({ length: daysInMonth }, (_, i) => `${i + 1}`);
+            data = dailyData;
+            break;
+            
+        case 'weekly':
+            const weeklyData = [0, 0, 0, 0, 0];
+            
+            sales.forEach(sale => {
+                const saleDate = sale.date.toDate();
+                const dayOfMonth = saleDate.getDate();
+                const weekIndex = Math.floor((dayOfMonth - 1) / 7);
+                if (weekIndex < 5) {
+                    weeklyData[weekIndex] += sale.total || 0;
+                }
+            });
+            
+            labels = ['Week 1', 'Week 2', 'Week 3', 'Week 4', 'Week 5'];
+            data = weeklyData;
+            break;
+            
+        case 'monthly':
+            labels = [new Date(year, month, 1).toLocaleDateString('en-US', { month: 'long' })];
+            data = [sales.reduce((sum, sale) => sum + (sale.total || 0), 0)];
+            break;
+    }
+    
+    return { labels, data };
+}
+
+function displayReportFromCache(period, selectedMonth, selectedYear) {
+    const monthNames = ['January', 'February', 'March', 'April', 'May', 'June', 
+                        'July', 'August', 'September', 'October', 'November', 'December'];
+    
+    // Update chart title only, data will be redrawn from cache
+    if (reportChart) {
+        reportChart.options.plugins.title.text = `${monthNames[selectedMonth]} ${selectedYear} - ${period.charAt(0).toUpperCase() + period.slice(1)} Sales`;
+        reportChart.update();
     }
 }
 
@@ -322,6 +367,208 @@ function displayReport(period, labels, data, totalSales, totalTransactions, aver
     });
 }
 
+async function processProductSalesBreakdown(salesSnapshot) {
+    // Initialize counters
+    const productSales = {
+        all: {},
+        seniorPWD: {},
+        yakap: {}
+    };
+    
+    const totals = {
+        all: { quantity: 0, revenue: 0, originalRevenue: 0, discountAmount: 0 },
+        seniorPWD: { quantity: 0, revenue: 0, originalRevenue: 0, discountAmount: 0 },
+        yakap: { quantity: 0, revenue: 0, originalRevenue: 0, discountAmount: 0 }
+    };
+    
+    salesSnapshot.forEach(doc => {
+        const sale = doc.data();
+        const discountType = sale.discountType || 'none';
+        
+        if (sale.items && Array.isArray(sale.items)) {
+            sale.items.forEach(item => {
+                const brandName = item.brand || item.name || 'Unknown Product';
+                const genericName = item.generic || '';
+                
+                const productKey = genericName ? `${brandName}|${genericName}` : brandName;
+                const displayName = genericName ? `${brandName} (${genericName})` : brandName;
+                
+                const itemOriginalRevenue = (item.price * item.quantity) || 0;
+                const itemDiscountedRevenue = item.subtotal || itemOriginalRevenue;
+                const itemDiscountAmount = itemOriginalRevenue - itemDiscountedRevenue;
+                
+                // Add to 'all'
+                addToProductSales(productSales.all, productKey, brandName, genericName, displayName, item, itemOriginalRevenue, itemDiscountedRevenue, itemDiscountAmount);
+                updateTotals(totals.all, item, itemOriginalRevenue, itemDiscountedRevenue, itemDiscountAmount);
+                
+                // Add to specific discount type
+                if (discountType === 'seniorPWD') {
+                    addToProductSales(productSales.seniorPWD, productKey, brandName, genericName, displayName, item, itemOriginalRevenue, itemDiscountedRevenue, itemDiscountAmount);
+                    updateTotals(totals.seniorPWD, item, itemOriginalRevenue, itemDiscountedRevenue, itemDiscountAmount);
+                } else if (discountType === 'yakap') {
+                    addToProductSales(productSales.yakap, productKey, brandName, genericName, displayName, item, itemOriginalRevenue, itemDiscountedRevenue, itemDiscountAmount);
+                    updateTotals(totals.yakap, item, itemOriginalRevenue, itemDiscountedRevenue, itemDiscountAmount);
+                }
+            });
+        }
+    });
+    
+    // Convert to arrays and sort
+    const productSalesArray = {
+        all: Object.entries(productSales.all).map(([key, data]) => ({
+            key, ...data
+        })).sort((a, b) => b.quantity - a.quantity),
+        
+        seniorPWD: Object.entries(productSales.seniorPWD).map(([key, data]) => ({
+            key, ...data
+        })).sort((a, b) => b.quantity - a.quantity),
+        
+        yakap: Object.entries(productSales.yakap).map(([key, data]) => ({
+            key, ...data
+        })).sort((a, b) => b.quantity - a.quantity)
+    };
+    
+    return { productSalesArray, totals };
+}
+
+function updateTotals(totalObj, item, originalRevenue, discountedRevenue, discountAmount) {
+    totalObj.quantity += item.quantity || 0;
+    totalObj.originalRevenue += originalRevenue;
+    totalObj.revenue += discountedRevenue;
+    totalObj.discountAmount += discountAmount;
+}
+
+function addToProductSales(obj, key, brand, generic, displayName, item, originalRevenue, discountedRevenue, discountAmount) {
+    if (!obj[key]) {
+        obj[key] = {
+            brand,
+            generic,
+            displayName,
+            quantity: 0,
+            originalRevenue: 0,
+            revenue: 0,
+            discountAmount: 0
+        };
+    }
+    obj[key].quantity += item.quantity || 0;
+    obj[key].originalRevenue += originalRevenue;
+    obj[key].revenue += discountedRevenue;
+    obj[key].discountAmount += discountAmount;
+}
+
+async function processFastMovingProducts(selectedMonth, selectedYear) {
+    const startDate = new Date(selectedYear, selectedMonth, 1);
+    startDate.setHours(0, 0, 0, 0);
+    
+    const endDate = new Date(selectedYear, selectedMonth + 1, 1);
+    endDate.setHours(0, 0, 0, 0);
+    
+    const prevMonthStart = new Date(selectedYear, selectedMonth - 1, 1);
+    prevMonthStart.setHours(0, 0, 0, 0);
+    
+    const prevMonthEnd = new Date(selectedYear, selectedMonth, 1);
+    prevMonthEnd.setHours(0, 0, 0, 0);
+    
+    // Fetch current and previous month data in parallel
+    const [currentMonthSnapshot, prevMonthSnapshot] = await Promise.all([
+        getDocs(query(
+            collection(db, "sales"),
+            where("date", ">=", Timestamp.fromDate(startDate)),
+            where("date", "<", Timestamp.fromDate(endDate))
+        )),
+        getDocs(query(
+            collection(db, "sales"),
+            where("date", ">=", Timestamp.fromDate(prevMonthStart)),
+            where("date", "<", Timestamp.fromDate(prevMonthEnd))
+        ))
+    ]);
+    
+    const productAnalysis = {};
+    
+    // Process current month
+    currentMonthSnapshot.forEach(doc => {
+        const sale = doc.data();
+        if (sale.items) {
+            sale.items.forEach(item => {
+                const brandName = item.brand || item.name || 'Unknown';
+                const genericName = item.generic || '';
+                const key = genericName ? `${brandName}|${genericName}` : brandName;
+                
+                if (!productAnalysis[key]) {
+                    productAnalysis[key] = {
+                        brand: brandName,
+                        generic: genericName,
+                        currentQuantity: 0,
+                        prevQuantity: 0,
+                        currentRevenue: 0,
+                        prevRevenue: 0,
+                        currentOriginalRevenue: 0,
+                        currentDiscountAmount: 0
+                    };
+                }
+                
+                const itemOriginalRevenue = (item.price * item.quantity) || 0;
+                const itemDiscountedRevenue = item.subtotal || itemOriginalRevenue;
+                const itemDiscountAmount = itemOriginalRevenue - itemDiscountedRevenue;
+                
+                productAnalysis[key].currentQuantity += item.quantity || 0;
+                productAnalysis[key].currentRevenue += itemDiscountedRevenue;
+                productAnalysis[key].currentOriginalRevenue += itemOriginalRevenue;
+                productAnalysis[key].currentDiscountAmount += itemDiscountAmount;
+            });
+        }
+    });
+    
+    // Process previous month
+    prevMonthSnapshot.forEach(doc => {
+        const sale = doc.data();
+        if (sale.items) {
+            sale.items.forEach(item => {
+                const brandName = item.brand || item.name || 'Unknown';
+                const genericName = item.generic || '';
+                const key = genericName ? `${brandName}|${genericName}` : brandName;
+                
+                if (!productAnalysis[key]) {
+                    productAnalysis[key] = {
+                        brand: brandName,
+                        generic: genericName,
+                        currentQuantity: 0,
+                        prevQuantity: 0,
+                        currentRevenue: 0,
+                        prevRevenue: 0,
+                        currentOriginalRevenue: 0,
+                        currentDiscountAmount: 0
+                    };
+                }
+                
+                const itemOriginalRevenue = (item.price * item.quantity) || 0;
+                const itemDiscountedRevenue = item.subtotal || itemOriginalRevenue;
+                
+                productAnalysis[key].prevQuantity += item.quantity || 0;
+                productAnalysis[key].prevRevenue += itemDiscountedRevenue;
+            });
+        }
+    });
+    
+    // Calculate metrics and sort
+    return Object.values(productAnalysis)
+        .map(p => {
+            const growth = p.prevQuantity 
+                ? ((p.currentQuantity - p.prevQuantity) / p.prevQuantity * 100).toFixed(1)
+                : p.currentQuantity > 0 ? '100' : '0';
+            const velocity = (p.currentQuantity / 30).toFixed(2);
+            
+            return {
+                ...p,
+                growth,
+                velocity,
+                trend: p.currentQuantity > p.prevQuantity ? 'up' : 
+                       p.currentQuantity < p.prevQuantity ? 'down' : 'stable'
+            };
+        })
+        .sort((a, b) => b.currentQuantity - a.currentQuantity);
+}
+
 async function loadProductSalesBreakdown(selectedMonth, selectedYear) {
     try {
         const container = document.getElementById('productSalesBreakdown');
@@ -333,145 +580,19 @@ async function loadProductSalesBreakdown(selectedMonth, selectedYear) {
         const endDate = new Date(selectedYear, selectedMonth + 1, 1);
         endDate.setHours(0, 0, 0, 0);
         
-        const salesQuery = query(
+        const salesSnapshot = await getDocs(query(
             collection(db, "sales"),
             where("date", ">=", Timestamp.fromDate(startDate)),
             where("date", "<", Timestamp.fromDate(endDate))
-        );
+        ));
         
-        const salesSnapshot = await getDocs(salesQuery);
-        
-        // Initialize counters for different discount types
-        const productSales = {
-            all: {},
-            seniorPWD: {},
-            yakap: {}
-        };
-        
-        let totals = {
-            all: { 
-                quantity: 0, 
-                revenue: 0,
-                originalRevenue: 0,
-                discountAmount: 0
-            },
-            seniorPWD: { 
-                quantity: 0, 
-                revenue: 0,
-                originalRevenue: 0,
-                discountAmount: 0
-            },
-            yakap: { 
-                quantity: 0, 
-                revenue: 0,
-                originalRevenue: 0,
-                discountAmount: 0
-            }
-        };
-        
-        salesSnapshot.forEach(doc => {
-            const sale = doc.data();
-            const discountType = sale.discountType || 'none';
-            const discountRate = sale.discountPercentage || 0;
-            
-            if (sale.items && Array.isArray(sale.items)) {
-                sale.items.forEach(item => {
-                    const brandName = item.brand || item.name || 'Unknown Product';
-                    const genericName = item.generic || '';
-                    
-                    // Create a combined key that includes both brand and generic
-                    const displayName = genericName ? `${brandName} (${genericName})` : brandName;
-                    const productKey = genericName ? `${brandName}|${genericName}` : brandName;
-                    
-                    const itemOriginalRevenue = (item.price * item.quantity) || 0;
-                    const itemDiscountedRevenue = item.subtotal || itemOriginalRevenue;
-                    const itemDiscountAmount = itemOriginalRevenue - itemDiscountedRevenue;
-                    
-                    // Always add to 'all'
-                    addToProductSales(productSales.all, productKey, brandName, genericName, displayName, item, itemOriginalRevenue, itemDiscountedRevenue, itemDiscountAmount);
-                    totals.all.quantity += item.quantity || 0;
-                    totals.all.originalRevenue += itemOriginalRevenue;
-                    totals.all.revenue += itemDiscountedRevenue;
-                    totals.all.discountAmount += itemDiscountAmount;
-                    
-                    // Add to specific discount type if applicable
-                    if (discountType === 'seniorPWD') {
-                        addToProductSales(productSales.seniorPWD, productKey, brandName, genericName, displayName, item, itemOriginalRevenue, itemDiscountedRevenue, itemDiscountAmount);
-                        totals.seniorPWD.quantity += item.quantity || 0;
-                        totals.seniorPWD.originalRevenue += itemOriginalRevenue;
-                        totals.seniorPWD.revenue += itemDiscountedRevenue;
-                        totals.seniorPWD.discountAmount += itemDiscountAmount;
-                    } else if (discountType === 'yakap') {
-                        addToProductSales(productSales.yakap, productKey, brandName, genericName, displayName, item, itemOriginalRevenue, itemDiscountedRevenue, itemDiscountAmount);
-                        totals.yakap.quantity += item.quantity || 0;
-                        totals.yakap.originalRevenue += itemOriginalRevenue;
-                        totals.yakap.revenue += itemDiscountedRevenue;
-                        totals.yakap.discountAmount += itemDiscountAmount;
-                    }
-                });
-            }
-        });
-        
-        // Convert objects to arrays and sort
-        const productSalesArray = {
-            all: Object.entries(productSales.all).map(([key, data]) => ({
-                key: key,
-                brand: data.brand,
-                generic: data.generic,
-                displayName: data.displayName,
-                quantity: data.quantity,
-                originalRevenue: data.originalRevenue,
-                revenue: data.revenue,
-                discountAmount: data.discountAmount
-            })).sort((a, b) => b.quantity - a.quantity),
-            
-            seniorPWD: Object.entries(productSales.seniorPWD).map(([key, data]) => ({
-                key: key,
-                brand: data.brand,
-                generic: data.generic,
-                displayName: data.displayName,
-                quantity: data.quantity,
-                originalRevenue: data.originalRevenue,
-                revenue: data.revenue,
-                discountAmount: data.discountAmount
-            })).sort((a, b) => b.quantity - a.quantity),
-            
-            yakap: Object.entries(productSales.yakap).map(([key, data]) => ({
-                key: key,
-                brand: data.brand,
-                generic: data.generic,
-                displayName: data.displayName,
-                quantity: data.quantity,
-                originalRevenue: data.originalRevenue,
-                revenue: data.revenue,
-                discountAmount: data.discountAmount
-            })).sort((a, b) => b.quantity - a.quantity)
-        };
-        
-        displayProductSalesBreakdown(productSalesArray, totals);
+        const result = await processProductSalesBreakdown(salesSnapshot);
+        displayProductSalesBreakdown(result.productSalesArray, result.totals);
         
     } catch (error) {
         console.error("Error loading product sales breakdown:", error);
         document.getElementById('productSalesBreakdown').innerHTML = '<p class="error">Error loading product sales</p>';
     }
-}
-
-function addToProductSales(productSalesObj, productKey, brandName, genericName, displayName, item, originalRevenue, discountedRevenue, discountAmount) {
-    if (!productSalesObj[productKey]) {
-        productSalesObj[productKey] = {
-            brand: brandName,
-            generic: genericName,
-            displayName: displayName,
-            quantity: 0,
-            originalRevenue: 0,
-            revenue: 0,
-            discountAmount: 0
-        };
-    }
-    productSalesObj[productKey].quantity += item.quantity || 0;
-    productSalesObj[productKey].originalRevenue += originalRevenue;
-    productSalesObj[productKey].revenue += discountedRevenue;
-    productSalesObj[productKey].discountAmount += discountAmount;
 }
 
 function displayProductSalesBreakdown(productSalesArray, totals) {
@@ -496,84 +617,80 @@ function displayProductSalesBreakdown(productSalesArray, totals) {
             <div class="discount-summary-card">
                 <div class="summary-row">
                     <span>Total Original Price:</span>
-                    <span>₱${selectedTotals.originalRevenue.toFixed(2)}</span>
+                    <span>₱${selectedTotals?.originalRevenue.toFixed(2) || '0.00'}</span>
                 </div>
                 <div class="summary-row discount">
                     <span>Total Discount:</span>
-                    <span>-₱${selectedTotals.discountAmount.toFixed(2)}</span>
+                    <span>-₱${selectedTotals?.discountAmount.toFixed(2) || '0.00'}</span>
                 </div>
                 <div class="summary-row total">
-                    <span>Final Revenue:</span>
-                    <span>₱${selectedTotals.revenue.toFixed(2)}</span>
+                    <span>Total Revenue:</span>
+                    <span>₱${selectedTotals?.revenue.toFixed(2) || '0.00'}</span>
                 </div>
             </div>
             <p class="no-data">No product sales data for this period with the selected filter</p>
         `;
         
-        // Add event listener to dropdown
-        document.getElementById('discountFilterSelect')?.addEventListener('change', (e) => {
-            currentDiscountFilter = e.target.value;
-            displayProductSalesBreakdown(productSalesArray, totals);
-        });
-        
+        setupFilterListener();
         return;
     }
     
-    let html = `
+    // Build HTML efficiently
+    let html = buildProductSalesHeader(currentDiscountFilter, totals);
+    html += buildDiscountSummary(selectedTotals);
+    html += `<p class="total-summary">Total Items Sold: ${selectedTotals.quantity} pcs</p>`;
+    html += buildProductSalesTable(selectedData, selectedTotals);
+    
+    container.innerHTML = html;
+    setupFilterListener();
+}
+
+function buildProductSalesHeader(filter, totals) {
+    const filterBadge = filter === 'seniorPWD' ? '<span class="filter-badge senior-pwd">Senior/PWD</span>' : 
+                       filter === 'yakap' ? '<span class="filter-badge yakap">YAKAP</span>' : '';
+    
+    return `
         <div class="product-sales-header">
-            <h3><i class="fas fa-chart-pie"></i> Product Sales Breakdown 
-                ${currentDiscountFilter === 'seniorPWD' ? '<span class="filter-badge senior-pwd">Senior/PWD</span>' : 
-                  currentDiscountFilter === 'yakap' ? '<span class="filter-badge yakap">YAKAP</span>' : ''}
-            </h3>
+            <h3><i class="fas fa-chart-pie"></i> Product Sales Breakdown ${filterBadge}</h3>
             <div class="filter-dropdown-container">
                 <select id="discountFilterSelect" class="discount-filter-select">
-                    <option value="all" ${currentDiscountFilter === 'all' ? 'selected' : ''}>All Sales (₱${totals.all.revenue.toFixed(2)})</option>
-                    <option value="seniorPWD" ${currentDiscountFilter === 'seniorPWD' ? 'selected' : ''}>Senior/PWD (₱${totals.seniorPWD.revenue.toFixed(2)})</option>
-                    <option value="yakap" ${currentDiscountFilter === 'yakap' ? 'selected' : ''}>YAKAP (₱${totals.yakap.revenue.toFixed(2)})</option>
+                    <option value="all" ${filter === 'all' ? 'selected' : ''}>All Sales (₱${totals.all.revenue.toFixed(2)})</option>
+                    <option value="seniorPWD" ${filter === 'seniorPWD' ? 'selected' : ''}>Senior/PWD (₱${totals.seniorPWD.revenue.toFixed(2)})</option>
+                    <option value="yakap" ${filter === 'yakap' ? 'selected' : ''}>YAKAP (₱${totals.yakap.revenue.toFixed(2)})</option>
                 </select>
             </div>
         </div>
-        
+    `;
+}
+
+function buildDiscountSummary(totals) {
+    return `
         <div class="discount-summary-card">
             <div class="summary-row">
                 <span>Total Original Price:</span>
-                <span>₱${selectedTotals.originalRevenue.toFixed(2)}</span>
+                <span>₱${totals.originalRevenue.toFixed(2)}</span>
             </div>
             <div class="summary-row discount">
                 <span>Total Discount:</span>
-                <span>-₱${selectedTotals.discountAmount.toFixed(2)}</span>
+                <span>-₱${totals.discountAmount.toFixed(2)}</span>
             </div>
             <div class="summary-row total">
-                <span>Final Revenue:</span>
-                <span>₱${selectedTotals.revenue.toFixed(2)}</span>
+                <span>Total Revenue:</span>
+                <span>₱${totals.revenue.toFixed(2)}</span>
             </div>
         </div>
-        
-        <p class="total-summary">Total Items Sold: ${selectedTotals.quantity} pcs</p>
-        
-        <div class="product-sales-table-container">
-            <table class="product-sales-table">
-                <thead>
-                    <tr>
-                        <th>Brand Name</th>
-                        <th>Generic Name</th>
-                        <th>Qty</th>
-                        <th>Original Price</th>
-                        <th>Discount</th>
-                        <th>Final Revenue</th>
-                        <th>%</th>
-                    </tr>
-                </thead>
-                <tbody>
     `;
-    
-    selectedData.forEach(product => {
-        const percentage = selectedTotals.revenue > 0 ? ((product.revenue / selectedTotals.revenue) * 100).toFixed(1) : 0;
+}
+
+function buildProductSalesTable(data, totals) {
+    let rows = '';
+    data.forEach(product => {
+        const percentage = totals.revenue > 0 ? ((product.revenue / totals.revenue) * 100).toFixed(1) : 0;
         const genericDisplay = product.generic || '—';
-        html += `
+        rows += `
             <tr>
-                <td><strong>${product.brand}</strong></td>
-                <td>${genericDisplay}</td>
+                <td><strong>${escapeHtml(product.brand)}</strong></td>
+                <td>${escapeHtml(genericDisplay)}</td>
                 <td><strong>${product.quantity}</strong> pcs</td>
                 <td>₱${product.originalRevenue.toFixed(2)}</td>
                 <td class="discount-cell">-₱${product.discountAmount.toFixed(2)}</td>
@@ -583,146 +700,55 @@ function displayProductSalesBreakdown(productSalesArray, totals) {
         `;
     });
     
-    html += `
-                </tbody>
+    return `
+        <div class="product-sales-table-container">
+            <table class="product-sales-table">
+                <thead>
+                    <tr>
+                        <th>Brand Name</th>
+                        <th>Generic Name</th>
+                        <th>Qty</th>
+                        <th>Original Price</th>
+                        <th>Discount</th>
+                        <th>Total Revenue</th>
+                        <th>%</th>
+                    </tr>
+                </thead>
+                <tbody>${rows}</tbody>
             </table>
         </div>
     `;
-    
-    container.innerHTML = html;
-    
-    // Add event listener to dropdown
-    document.getElementById('discountFilterSelect')?.addEventListener('change', (e) => {
-        currentDiscountFilter = e.target.value;
-        displayProductSalesBreakdown(productSalesArray, totals);
-    });
 }
 
-// New function to load fast moving products (simplified table design)
+function escapeHtml(text) {
+    const div = document.createElement('div');
+    div.textContent = text;
+    return div.innerHTML;
+}
+
+function setupFilterListener() {
+    const filterSelect = document.getElementById('discountFilterSelect');
+    if (filterSelect) {
+        // Remove existing listener to prevent duplicates
+        filterSelect.removeEventListener('change', handleFilterChange);
+        filterSelect.addEventListener('change', handleFilterChange);
+    }
+}
+
+function handleFilterChange(e) {
+    currentDiscountFilter = e.target.value;
+    if (reportCache.productSales && reportCache.totals) {
+        displayProductSalesBreakdown(reportCache.productSales, reportCache.totals);
+    }
+}
+
 async function loadFastMovingProducts(selectedMonth, selectedYear) {
     try {
         const container = document.getElementById('fastMovingProducts');
         if (!container) return;
         
-        const startDate = new Date(selectedYear, selectedMonth, 1);
-        startDate.setHours(0, 0, 0, 0);
-        
-        const endDate = new Date(selectedYear, selectedMonth + 1, 1);
-        endDate.setHours(0, 0, 0, 0);
-        
-        // Get current month sales
-        const currentMonthQuery = query(
-            collection(db, "sales"),
-            where("date", ">=", Timestamp.fromDate(startDate)),
-            where("date", "<", Timestamp.fromDate(endDate))
-        );
-        
-        const currentMonthSnapshot = await getDocs(currentMonthQuery);
-        
-        // Get previous month sales for comparison
-        const prevMonthStart = new Date(selectedYear, selectedMonth - 1, 1);
-        prevMonthStart.setHours(0, 0, 0, 0);
-        
-        const prevMonthEnd = new Date(selectedYear, selectedMonth, 1);
-        prevMonthEnd.setHours(0, 0, 0, 0);
-        
-        const prevMonthQuery = query(
-            collection(db, "sales"),
-            where("date", ">=", Timestamp.fromDate(prevMonthStart)),
-            where("date", "<", Timestamp.fromDate(prevMonthEnd))
-        );
-        
-        const prevMonthSnapshot = await getDocs(prevMonthQuery);
-        
-        // Analyze product sales
-        const productAnalysis = {};
-        
-        // Process current month sales
-        currentMonthSnapshot.forEach(doc => {
-            const sale = doc.data();
-            if (sale.items && Array.isArray(sale.items)) {
-                sale.items.forEach(item => {
-                    const brandName = item.brand || item.name || 'Unknown Product';
-                    const genericName = item.generic || '';
-                    const productKey = genericName ? `${brandName}|${genericName}` : brandName;
-                    
-                    if (!productAnalysis[productKey]) {
-                        productAnalysis[productKey] = {
-                            brand: brandName,
-                            generic: genericName,
-                            currentQuantity: 0,
-                            prevQuantity: 0,
-                            currentRevenue: 0,
-                            prevRevenue: 0,
-                            currentOriginalRevenue: 0,
-                            currentDiscountAmount: 0
-                        };
-                    }
-                    
-                    const itemOriginalRevenue = (item.price * item.quantity) || 0;
-                    const itemDiscountedRevenue = item.subtotal || itemOriginalRevenue;
-                    const itemDiscountAmount = itemOriginalRevenue - itemDiscountedRevenue;
-                    
-                    productAnalysis[productKey].currentQuantity += item.quantity || 0;
-                    productAnalysis[productKey].currentRevenue += itemDiscountedRevenue;
-                    productAnalysis[productKey].currentOriginalRevenue += itemOriginalRevenue;
-                    productAnalysis[productKey].currentDiscountAmount += itemDiscountAmount;
-                });
-            }
-        });
-        
-        // Process previous month sales
-        prevMonthSnapshot.forEach(doc => {
-            const sale = doc.data();
-            if (sale.items && Array.isArray(sale.items)) {
-                sale.items.forEach(item => {
-                    const brandName = item.brand || item.name || 'Unknown Product';
-                    const genericName = item.generic || '';
-                    const productKey = genericName ? `${brandName}|${genericName}` : brandName;
-                    
-                    if (!productAnalysis[productKey]) {
-                        productAnalysis[productKey] = {
-                            brand: brandName,
-                            generic: genericName,
-                            currentQuantity: 0,
-                            prevQuantity: 0,
-                            currentRevenue: 0,
-                            prevRevenue: 0,
-                            currentOriginalRevenue: 0,
-                            currentDiscountAmount: 0
-                        };
-                    }
-                    
-                    const itemOriginalRevenue = (item.price * item.quantity) || 0;
-                    const itemDiscountedRevenue = item.subtotal || itemOriginalRevenue;
-                    
-                    productAnalysis[productKey].prevQuantity += item.quantity || 0;
-                    productAnalysis[productKey].prevRevenue += itemDiscountedRevenue;
-                });
-            }
-        });
-        
-        // Calculate metrics and convert to array
-        const productsArray = Object.values(productAnalysis).map(product => {
-            const growth = product.prevQuantity > 0 
-                ? ((product.currentQuantity - product.prevQuantity) / product.prevQuantity * 100).toFixed(1)
-                : product.currentQuantity > 0 ? '100' : '0';
-            
-            const velocity = (product.currentQuantity / 30).toFixed(2); // Daily sales velocity
-            
-            return {
-                ...product,
-                growth: growth,
-                velocity: velocity,
-                trend: product.currentQuantity > product.prevQuantity ? 'up' : 
-                       product.currentQuantity < product.prevQuantity ? 'down' : 'stable'
-            };
-        });
-        
-        // Sort by current quantity (fastest moving first)
-        const sortedProducts = productsArray.sort((a, b) => b.currentQuantity - a.currentQuantity);
-        
-        displayFastMovingProducts(sortedProducts);
+        const products = await processFastMovingProducts(selectedMonth, selectedYear);
+        displayFastMovingProducts(products);
         
     } catch (error) {
         console.error("Error loading fast moving products:", error);
@@ -744,43 +770,19 @@ function displayFastMovingProducts(products) {
         return;
     }
     
-    // Get top 20 fastest moving products
     const topProducts = products.slice(0, 20);
     
-    let html = `
-        <div class="fast-moving-header">
-            <h3><i class="fas fa-rocket"></i> Fast Moving Products (Top 20)</h3>
-            <p class="fast-moving-subtitle">Products ranked by sales volume - Higher quantity = Faster moving</p>
-        </div>
-        
-        <div class="fast-moving-table-container">
-            <table class="fast-moving-table">
-                <thead>
-                    <tr>
-                        <th>Rank</th>
-                        <th>Brand Name</th>
-                        <th>Generic Name</th>
-                        <th>Qty Sold</th>
-                        <th>Original Price</th>
-                        <th>Discount</th>
-                        <th>Final Revenue</th>
-                        <th>Daily Velocity</th>
-                        <th>vs Last Month</th>
-                    </tr>
-                </thead>
-                <tbody>
-    `;
-    
+    let rows = '';
     topProducts.forEach((product, index) => {
         const trendIcon = product.trend === 'up' ? '↑' : product.trend === 'down' ? '↓' : '→';
         const trendClass = product.trend === 'up' ? 'trend-up' : product.trend === 'down' ? 'trend-down' : 'trend-stable';
         const genericDisplay = product.generic || '—';
         
-        html += `
+        rows += `
             <tr>
                 <td><strong>#${index + 1}</strong></td>
-                <td><strong>${product.brand}</strong></td>
-                <td>${genericDisplay}</td>
+                <td><strong>${escapeHtml(product.brand)}</strong></td>
+                <td>${escapeHtml(genericDisplay)}</td>
                 <td><strong>${product.currentQuantity}</strong> pcs</td>
                 <td>₱${product.currentOriginalRevenue.toFixed(2)}</td>
                 <td class="discount-cell">-₱${product.currentDiscountAmount.toFixed(2)}</td>
@@ -791,13 +793,30 @@ function displayFastMovingProducts(products) {
         `;
     });
     
-    html += `
-                </tbody>
+    container.innerHTML = `
+        <div class="fast-moving-header">
+            <h3><i class="fas fa-rocket"></i> Fast Moving Products (Top 20)</h3>
+            <p class="fast-moving-subtitle">Products ranked by sales volume - Higher quantity = Faster moving</p>
+        </div>
+        <div class="fast-moving-table-container">
+            <table class="fast-moving-table">
+                <thead>
+                    <tr>
+                        <th>Rank</th>
+                        <th>Brand Name</th>
+                        <th>Generic Name</th>
+                        <th>Qty Sold</th>
+                        <th>Original Price</th>
+                        <th>Discount</th>
+                        <th>Total Revenue</th>
+                        <th>Daily Velocity</th>
+                        <th>vs Last Month</th>
+                    </tr>
+                </thead>
+                <tbody>${rows}</tbody>
             </table>
         </div>
     `;
-    
-    container.innerHTML = html;
 }
 
 // PDF Download
@@ -830,8 +849,15 @@ async function downloadReportPDF() {
             averageSale = parseFloat(statsCards[3]?.querySelector('p')?.textContent?.replace('₱', '') || 0);
         }
         
-        const productSalesData = await getProductSalesData(selectedMonth, selectedYear);
-        const fastMovingData = await getFastMovingData(selectedMonth, selectedYear);
+        // Use cached data if available
+        const productSalesData = reportCache.productSales ? 
+            {
+                all: reportCache.productSales.all,
+                seniorPWD: reportCache.productSales.seniorPWD,
+                yakap: reportCache.productSales.yakap
+            } : await getProductSalesData(selectedMonth, selectedYear);
+        
+        const fastMovingData = reportCache.fastMoving || await getFastMovingData(selectedMonth, selectedYear);
         
         const { jsPDF } = window.jspdf;
         const doc = new jsPDF({
@@ -844,248 +870,19 @@ async function downloadReportPDF() {
         const pageWidth = doc.internal.pageSize.getWidth();
         const margin = 14;
         
-        doc.setFontSize(22);
-        doc.setFont('helvetica', 'bold');
-        doc.text('GMDC BOTICA PHARMACY', pageWidth / 2, yPos, { align: 'center' });
-        yPos += 8;
+        // Add header
+        yPos = addPDFHeader(doc, pageWidth, margin, yPos, monthNames[selectedMonth], selectedYear, period);
         
-        doc.setFontSize(18);
-        doc.setTextColor(52, 152, 219);
-        doc.text('Comprehensive Sales Report', pageWidth / 2, yPos, { align: 'center' });
-        yPos += 8;
+        // Add chart
+        yPos = await addPDFChart(doc, chartCanvas, margin, pageWidth, yPos);
         
-        doc.setFontSize(14);
-        doc.setTextColor(44, 62, 80);
-        doc.text(`${monthNames[selectedMonth]} ${selectedYear} - ${period.charAt(0).toUpperCase() + period.slice(1)} Analysis`, pageWidth / 2, yPos, { align: 'center' });
-        yPos += 10;
+        // Add fast moving products
+        yPos = addPDFFastMoving(doc, margin, pageWidth, yPos, fastMovingData);
         
-        doc.setFontSize(10);
-        doc.setTextColor(127, 140, 141);
-        const now = new Date();
-        doc.text(`Generated on: ${now.toLocaleString()}`, margin, yPos);
-        yPos += 5;
-        
-        const cashierName = document.getElementById('sidebarUserName')?.textContent || 'Unknown';
-        doc.text(`Generated by: ${cashierName}`, margin, yPos);
-        yPos += 10;
-        
-        doc.setFontSize(14);
-        doc.setFont('helvetica', 'bold');
-        doc.text('Executive Summary', margin, yPos);
-        yPos += 7;
-        
-        doc.setFontSize(11);
-        doc.setFont('helvetica', 'normal');
-        doc.text(`Gross Sales: ₱${totalSales.toFixed(2)}`, margin + 5, yPos);
-        yPos += 6;
-        doc.text(`Number of Transactions: ${transactions}`, margin + 5, yPos);
-        yPos += 6;
-        doc.text(`Total Discounts: ₱${totalDiscount.toFixed(2)}`, margin + 5, yPos);
-        yPos += 6;
-        doc.text(`Average Sale: ₱${averageSale.toFixed(2)}`, margin + 5, yPos);
-        yPos += 15;
-        
-        // Add chart if available
-        try {
-            const chartImage = chartCanvas.toDataURL('image/png');
-            doc.addImage(chartImage, 'PNG', margin, yPos, pageWidth - (margin * 2), 70);
-            yPos += 75;
-        } catch (error) {
-            console.error("Error adding chart to PDF:", error);
-        }
-        
-        // Add Fast Moving Products section
-        if (fastMovingData.length > 0) {
-            if (yPos > 250) {
-                doc.addPage();
-                yPos = 20;
-            }
-            
-            doc.setFontSize(16);
-            doc.setFont('helvetica', 'bold');
-            doc.text('Fast Moving Products - Top 20', margin, yPos);
-            yPos += 7;
-            
-            const fastMovingRows = [];
-            fastMovingData.slice(0, 20).forEach((product, index) => {
-                const genericDisplay = product.generic || '—';
-                fastMovingRows.push([
-                    `#${index + 1}`,
-                    product.brand.length > 12 ? product.brand.substring(0, 10) + '...' : product.brand,
-                    genericDisplay.length > 10 ? genericDisplay.substring(0, 8) + '...' : genericDisplay,
-                    product.currentQuantity.toString(),
-                    '₱' + product.currentOriginalRevenue.toFixed(2),
-                    '₱' + product.currentDiscountAmount.toFixed(2),
-                    '₱' + product.currentRevenue.toFixed(2),
-                    product.velocity + '/day',
-                    product.growth + '%'
-                ]);
-            });
-            
-            doc.autoTable({
-                head: [['Rank', 'Brand', 'Generic', 'Qty', 'Original', 'Discount', 'Final', 'Velocity', 'Growth']],
-                body: fastMovingRows,
-                startY: yPos,
-                theme: 'striped',
-                headStyles: { fillColor: [255, 159, 64] },
-                margin: { left: margin, right: margin }
-            });
-            
-            yPos = doc.lastAutoTable.finalY + 15;
-        }
-        
-        // Add product sales table for all discount types
-        if (productSalesData.all.length > 0) {
-            if (yPos > 250) {
-                doc.addPage();
-                yPos = 20;
-            }
-            
-            doc.setFontSize(16);
-            doc.setFont('helvetica', 'bold');
-            doc.text('Product Sales Breakdown - All Sales', margin, yPos);
-            yPos += 7;
-            
-            const totalOriginal = productSalesData.all.reduce((sum, p) => sum + p.originalRevenue, 0);
-            const totalDiscount = productSalesData.all.reduce((sum, p) => sum + p.discountAmount, 0);
-            const totalFinal = productSalesData.all.reduce((sum, p) => sum + p.revenue, 0);
-            
-            doc.setFontSize(10);
-            doc.setTextColor(127, 140, 141);
-            doc.text(`Summary: Original: ₱${totalOriginal.toFixed(2)} | Discount: -₱${totalDiscount.toFixed(2)} | Final: ₱${totalFinal.toFixed(2)}`, margin, yPos);
-            yPos += 7;
-            
-            const productTableColumn = ["Brand", "Generic", "Qty", "Original", "Discount", "Final", "%"];
-            const productTableRows = [];
-            
-            productSalesData.all.slice(0, 15).forEach(product => {
-                const percentage = totalFinal > 0 ? ((product.revenue / totalFinal) * 100).toFixed(1) : 0;
-                const genericDisplay = product.generic || '—';
-                productTableRows.push([
-                    product.brand.length > 15 ? product.brand.substring(0, 12) + '...' : product.brand,
-                    genericDisplay.length > 12 ? genericDisplay.substring(0, 10) + '...' : genericDisplay,
-                    product.quantity.toString(),
-                    '₱' + product.originalRevenue.toFixed(2),
-                    '₱' + product.discountAmount.toFixed(2),
-                    '₱' + product.revenue.toFixed(2),
-                    percentage + '%'
-                ]);
-            });
-            
-            doc.autoTable({
-                head: [productTableColumn],
-                body: productTableRows,
-                startY: yPos,
-                theme: 'striped',
-                headStyles: { fillColor: [52, 152, 219] },
-                columnStyles: {
-                    0: { cellWidth: 30 },
-                    1: { cellWidth: 25 },
-                    2: { cellWidth: 15, halign: 'center' },
-                    3: { cellWidth: 20, halign: 'right' },
-                    4: { cellWidth: 20, halign: 'right' },
-                    5: { cellWidth: 20, halign: 'right' },
-                    6: { cellWidth: 15, halign: 'center' }
-                },
-                margin: { left: margin, right: margin }
-            });
-            
-            yPos = doc.lastAutoTable.finalY + 15;
-        }
-        
-        // Add Senior/PWD breakdown if available
-        if (productSalesData.seniorPWD.length > 0) {
-            if (yPos > 250) {
-                doc.addPage();
-                yPos = 20;
-            }
-            
-            doc.setFontSize(14);
-            doc.setFont('helvetica', 'bold');
-            doc.setTextColor(102, 126, 234);
-            doc.text('Senior/PWD Discounted Sales', margin, yPos);
-            yPos += 7;
-            
-            const totalOriginal = productSalesData.seniorPWD.reduce((sum, p) => sum + p.originalRevenue, 0);
-            const totalDiscount = productSalesData.seniorPWD.reduce((sum, p) => sum + p.discountAmount, 0);
-            const totalFinal = productSalesData.seniorPWD.reduce((sum, p) => sum + p.revenue, 0);
-            
-            doc.setFontSize(10);
-            doc.setTextColor(127, 140, 141);
-            doc.text(`Summary: Original: ₱${totalOriginal.toFixed(2)} | Discount: -₱${totalDiscount.toFixed(2)} | Final: ₱${totalFinal.toFixed(2)}`, margin, yPos);
-            yPos += 7;
-            
-            const productTableRows = [];
-            
-            productSalesData.seniorPWD.slice(0, 10).forEach(product => {
-                const genericDisplay = product.generic || '—';
-                productTableRows.push([
-                    product.brand.length > 15 ? product.brand.substring(0, 12) + '...' : product.brand,
-                    genericDisplay.length > 12 ? genericDisplay.substring(0, 10) + '...' : genericDisplay,
-                    product.quantity.toString(),
-                    '₱' + product.originalRevenue.toFixed(2),
-                    '₱' + product.discountAmount.toFixed(2),
-                    '₱' + product.revenue.toFixed(2)
-                ]);
-            });
-            
-            doc.autoTable({
-                head: [["Brand", "Generic", "Qty", "Original", "Discount", "Final"]],
-                body: productTableRows,
-                startY: yPos,
-                theme: 'striped',
-                headStyles: { fillColor: [102, 126, 234] },
-                margin: { left: margin, right: margin }
-            });
-            
-            yPos = doc.lastAutoTable.finalY + 15;
-        }
-        
-        // Add YAKAP breakdown if available
-        if (productSalesData.yakap.length > 0) {
-            if (yPos > 250) {
-                doc.addPage();
-                yPos = 20;
-            }
-            
-            doc.setFontSize(14);
-            doc.setFont('helvetica', 'bold');
-            doc.setTextColor(255, 107, 107);
-            doc.text('YAKAP Discounted Sales', margin, yPos);
-            yPos += 7;
-            
-            const totalOriginal = productSalesData.yakap.reduce((sum, p) => sum + p.originalRevenue, 0);
-            const totalDiscount = productSalesData.yakap.reduce((sum, p) => sum + p.discountAmount, 0);
-            const totalFinal = productSalesData.yakap.reduce((sum, p) => sum + p.revenue, 0);
-            
-            doc.setFontSize(10);
-            doc.setTextColor(127, 140, 141);
-            doc.text(`Summary: Original: ₱${totalOriginal.toFixed(2)} | Discount: -₱${totalDiscount.toFixed(2)} | Final: ₱${totalFinal.toFixed(2)}`, margin, yPos);
-            yPos += 7;
-            
-            const productTableRows = [];
-            
-            productSalesData.yakap.slice(0, 10).forEach(product => {
-                const genericDisplay = product.generic || '—';
-                productTableRows.push([
-                    product.brand.length > 15 ? product.brand.substring(0, 12) + '...' : product.brand,
-                    genericDisplay.length > 12 ? genericDisplay.substring(0, 10) + '...' : genericDisplay,
-                    product.quantity.toString(),
-                    '₱' + product.originalRevenue.toFixed(2),
-                    '₱' + product.discountAmount.toFixed(2),
-                    '₱' + product.revenue.toFixed(2)
-                ]);
-            });
-            
-            doc.autoTable({
-                head: [["Brand", "Generic", "Qty", "Original", "Discount", "Final"]],
-                body: productTableRows,
-                startY: yPos,
-                theme: 'striped',
-                headStyles: { fillColor: [255, 107, 107] },
-                margin: { left: margin, right: margin }
-            });
-        }
+        // Add product sales breakdowns
+        yPos = addPDFProductBreakdown(doc, margin, pageWidth, yPos, productSalesData, 'all', 'Product Sales Breakdown - All Sales', [52, 152, 219]);
+        yPos = addPDFProductBreakdown(doc, margin, pageWidth, yPos, productSalesData, 'seniorPWD', 'Senior/PWD Discounted Sales', [102, 126, 234]);
+        yPos = addPDFProductBreakdown(doc, margin, pageWidth, yPos, productSalesData, 'yakap', 'YAKAP Discounted Sales', [255, 107, 107]);
         
         doc.save(`comprehensive_report_${monthNames[selectedMonth]}_${selectedYear}.pdf`);
         showNotification('PDF report downloaded successfully!', 'success');
@@ -1096,6 +893,149 @@ async function downloadReportPDF() {
     }
 }
 
+function addPDFHeader(doc, pageWidth, margin, yPos, monthName, year, period) {
+    doc.setFontSize(22);
+    doc.setFont('helvetica', 'bold');
+    doc.text('GMDC BOTICA PHARMACY', pageWidth / 2, yPos, { align: 'center' });
+    yPos += 8;
+    
+    doc.setFontSize(18);
+    doc.setTextColor(52, 152, 219);
+    doc.text('Comprehensive Sales Report', pageWidth / 2, yPos, { align: 'center' });
+    yPos += 8;
+    
+    doc.setFontSize(14);
+    doc.setTextColor(44, 62, 80);
+    doc.text(`${monthName} ${year} - ${period.charAt(0).toUpperCase() + period.slice(1)} Analysis`, pageWidth / 2, yPos, { align: 'center' });
+    yPos += 10;
+    
+    doc.setFontSize(10);
+    doc.setTextColor(127, 140, 141);
+    const now = new Date();
+    doc.text(`Generated on: ${now.toLocaleString()}`, margin, yPos);
+    yPos += 5;
+    
+    const cashierName = document.getElementById('sidebarUserName')?.textContent || 'Unknown';
+    doc.text(`Generated by: ${cashierName}`, margin, yPos);
+    yPos += 10;
+    
+    return yPos;
+}
+
+async function addPDFChart(doc, chartCanvas, margin, pageWidth, yPos) {
+    try {
+        const chartImage = chartCanvas.toDataURL('image/png');
+        doc.addImage(chartImage, 'PNG', margin, yPos, pageWidth - (margin * 2), 70);
+        yPos += 75;
+    } catch (error) {
+        console.error("Error adding chart to PDF:", error);
+    }
+    return yPos;
+}
+
+function addPDFFastMoving(doc, margin, pageWidth, yPos, fastMovingData) {
+    if (fastMovingData.length > 0) {
+        if (yPos > 250) {
+            doc.addPage();
+            yPos = 20;
+        }
+        
+        doc.setFontSize(16);
+        doc.setFont('helvetica', 'bold');
+        doc.text('Fast Moving Products - Top 20', margin, yPos);
+        yPos += 7;
+        
+        const fastMovingRows = fastMovingData.slice(0, 20).map((product, index) => {
+            const genericDisplay = product.generic || '—';
+            return [
+                `#${index + 1}`,
+                truncate(product.brand, 12),
+                truncate(genericDisplay, 10),
+                product.currentQuantity.toString(),
+                product.currentOriginalRevenue.toFixed(2),
+                product.currentDiscountAmount.toFixed(2),
+                product.currentRevenue.toFixed(2),
+                product.velocity + '/day',
+                product.growth + '%'
+            ];
+        });
+        
+        doc.autoTable({
+            head: [['Rank', 'Brand', 'Generic', 'Qty', 'Original', 'Discount', 'Total', 'Velocity', 'Growth']],
+            body: fastMovingRows,
+            startY: yPos,
+            theme: 'striped',
+            headStyles: { fillColor: [255, 159, 64] },
+            margin: { left: margin, right: margin }
+        });
+        
+        yPos = doc.lastAutoTable.finalY + 15;
+    }
+    return yPos;
+}
+
+function addPDFProductBreakdown(doc, margin, pageWidth, yPos, productSalesData, type, title, color) {
+    const data = productSalesData[type];
+    if (data && data.length > 0) {
+        if (yPos > 250) {
+            doc.addPage();
+            yPos = 20;
+        }
+        
+        doc.setFontSize(type === 'all' ? 16 : 14);
+        doc.setFont('helvetica', 'bold');
+        doc.setTextColor(color[0], color[1], color[2]);
+        doc.text(title, margin, yPos);
+        yPos += 7;
+        
+        const totalOriginal = data.reduce((sum, p) => sum + p.originalRevenue, 0);
+        const totalDiscount = data.reduce((sum, p) => sum + p.discountAmount, 0);
+        const totalFinal = data.reduce((sum, p) => sum + p.revenue, 0);
+        
+        doc.setFontSize(10);
+        doc.setTextColor(127, 140, 141);
+        doc.text(`Summary: Original: ₱${totalOriginal.toFixed(2)} | Discount: ₱${totalDiscount.toFixed(2)} | Total: ₱${totalFinal.toFixed(2)}`, margin, yPos);
+        yPos += 7;
+        
+        const columns = type === 'all' 
+            ? ["Brand", "Generic", "Qty", "Original", "Discount", "Total", "%"]
+            : ["Brand", "Generic", "Qty", "Original", "Discount", "Total"];
+        
+        const rows = data.slice(0, type === 'all' ? 15 : 10).map(product => {
+            const genericDisplay = product.generic || '—';
+            const row = [
+                truncate(product.brand, 15),
+                truncate(genericDisplay, 12),
+                product.quantity.toString(),
+                product.originalRevenue.toFixed(2),
+                product.discountAmount.toFixed(2),
+                product.revenue.toFixed(2)
+            ];
+            if (type === 'all') {
+                const percentage = totalFinal > 0 ? ((product.revenue / totalFinal) * 100).toFixed(1) : 0;
+                row.push(percentage + '%');
+            }
+            return row;
+        });
+        
+        doc.autoTable({
+            head: [columns],
+            body: rows,
+            startY: yPos,
+            theme: 'striped',
+            headStyles: { fillColor: color },
+            margin: { left: margin, right: margin }
+        });
+        
+        yPos = doc.lastAutoTable.finalY + 15;
+    }
+    return yPos;
+}
+
+function truncate(str, maxLen) {
+    return str.length > maxLen ? str.substring(0, maxLen - 3) + '...' : str;
+}
+
 async function getProductSalesData(selectedMonth, selectedYear) {
     try {
         const startDate = new Date(selectedYear, selectedMonth, 1);
@@ -1104,54 +1044,14 @@ async function getProductSalesData(selectedMonth, selectedYear) {
         const endDate = new Date(selectedYear, selectedMonth + 1, 1);
         endDate.setHours(0, 0, 0, 0);
         
-        const salesQuery = query(
+        const salesSnapshot = await getDocs(query(
             collection(db, "sales"),
             where("date", ">=", Timestamp.fromDate(startDate)),
             where("date", "<", Timestamp.fromDate(endDate))
-        );
+        ));
         
-        const salesSnapshot = await getDocs(salesQuery);
-        
-        const productSales = {
-            all: {},
-            seniorPWD: {},
-            yakap: {}
-        };
-        
-        salesSnapshot.forEach(doc => {
-            const sale = doc.data();
-            const discountType = sale.discountType || 'none';
-            
-            if (sale.items && Array.isArray(sale.items)) {
-                sale.items.forEach(item => {
-                    const brandName = item.brand || item.name || 'Unknown Product';
-                    const genericName = item.generic || '';
-                    
-                    // Create a unique key for this product (brand + generic)
-                    const productKey = genericName ? `${brandName}|${genericName}` : brandName;
-                    
-                    const itemOriginalRevenue = (item.price * item.quantity) || 0;
-                    const itemDiscountedRevenue = item.subtotal || itemOriginalRevenue;
-                    const itemDiscountAmount = itemOriginalRevenue - itemDiscountedRevenue;
-                    
-                    // Always add to 'all'
-                    addToProductSalesData(productSales.all, productKey, brandName, genericName, item, itemOriginalRevenue, itemDiscountedRevenue, itemDiscountAmount);
-                    
-                    // Add to specific discount type
-                    if (discountType === 'seniorPWD') {
-                        addToProductSalesData(productSales.seniorPWD, productKey, brandName, genericName, item, itemOriginalRevenue, itemDiscountedRevenue, itemDiscountAmount);
-                    } else if (discountType === 'yakap') {
-                        addToProductSalesData(productSales.yakap, productKey, brandName, genericName, item, itemOriginalRevenue, itemDiscountedRevenue, itemDiscountAmount);
-                    }
-                });
-            }
-        });
-        
-        return {
-            all: Object.values(productSales.all).sort((a, b) => b.quantity - a.quantity),
-            seniorPWD: Object.values(productSales.seniorPWD).sort((a, b) => b.quantity - a.quantity),
-            yakap: Object.values(productSales.yakap).sort((a, b) => b.quantity - a.quantity)
-        };
+        const result = await processProductSalesBreakdown(salesSnapshot);
+        return result.productSalesArray;
         
     } catch (error) {
         console.error("Error getting product sales data:", error);
@@ -1160,140 +1060,7 @@ async function getProductSalesData(selectedMonth, selectedYear) {
 }
 
 async function getFastMovingData(selectedMonth, selectedYear) {
-    try {
-        const startDate = new Date(selectedYear, selectedMonth, 1);
-        startDate.setHours(0, 0, 0, 0);
-        
-        const endDate = new Date(selectedYear, selectedMonth + 1, 1);
-        endDate.setHours(0, 0, 0, 0);
-        
-        const prevMonthStart = new Date(selectedYear, selectedMonth - 1, 1);
-        prevMonthStart.setHours(0, 0, 0, 0);
-        
-        const prevMonthEnd = new Date(selectedYear, selectedMonth, 1);
-        prevMonthEnd.setHours(0, 0, 0, 0);
-        
-        const currentMonthQuery = query(
-            collection(db, "sales"),
-            where("date", ">=", Timestamp.fromDate(startDate)),
-            where("date", "<", Timestamp.fromDate(endDate))
-        );
-        
-        const prevMonthQuery = query(
-            collection(db, "sales"),
-            where("date", ">=", Timestamp.fromDate(prevMonthStart)),
-            where("date", "<", Timestamp.fromDate(prevMonthEnd))
-        );
-        
-        const [currentMonthSnapshot, prevMonthSnapshot] = await Promise.all([
-            getDocs(currentMonthQuery),
-            getDocs(prevMonthQuery)
-        ]);
-        
-        const productAnalysis = {};
-        
-        // Process current month
-        currentMonthSnapshot.forEach(doc => {
-            const sale = doc.data();
-            if (sale.items) {
-                sale.items.forEach(item => {
-                    const brandName = item.brand || item.name || 'Unknown';
-                    const genericName = item.generic || '';
-                    const key = genericName ? `${brandName}|${genericName}` : brandName;
-                    
-                    if (!productAnalysis[key]) {
-                        productAnalysis[key] = {
-                            brand: brandName,
-                            generic: genericName,
-                            currentQuantity: 0,
-                            currentRevenue: 0,
-                            currentOriginalRevenue: 0,
-                            currentDiscountAmount: 0,
-                            prevQuantity: 0,
-                            prevRevenue: 0
-                        };
-                    }
-                    
-                    const itemOriginalRevenue = (item.price * item.quantity) || 0;
-                    const itemDiscountedRevenue = item.subtotal || itemOriginalRevenue;
-                    const itemDiscountAmount = itemOriginalRevenue - itemDiscountedRevenue;
-                    
-                    productAnalysis[key].currentQuantity += item.quantity || 0;
-                    productAnalysis[key].currentRevenue += itemDiscountedRevenue;
-                    productAnalysis[key].currentOriginalRevenue += itemOriginalRevenue;
-                    productAnalysis[key].currentDiscountAmount += itemDiscountAmount;
-                });
-            }
-        });
-        
-        // Process previous month
-        prevMonthSnapshot.forEach(doc => {
-            const sale = doc.data();
-            if (sale.items) {
-                sale.items.forEach(item => {
-                    const brandName = item.brand || item.name || 'Unknown';
-                    const genericName = item.generic || '';
-                    const key = genericName ? `${brandName}|${genericName}` : brandName;
-                    
-                    if (!productAnalysis[key]) {
-                        productAnalysis[key] = {
-                            brand: brandName,
-                            generic: genericName,
-                            currentQuantity: 0,
-                            currentRevenue: 0,
-                            currentOriginalRevenue: 0,
-                            currentDiscountAmount: 0,
-                            prevQuantity: 0,
-                            prevRevenue: 0
-                        };
-                    }
-                    
-                    const itemOriginalRevenue = (item.price * item.quantity) || 0;
-                    const itemDiscountedRevenue = item.subtotal || itemOriginalRevenue;
-                    
-                    productAnalysis[key].prevQuantity += item.quantity || 0;
-                    productAnalysis[key].prevRevenue += itemDiscountedRevenue;
-                });
-            }
-        });
-        
-        // Calculate metrics
-        return Object.values(productAnalysis)
-            .map(p => {
-                const growth = p.prevQuantity 
-                    ? ((p.currentQuantity - p.prevQuantity) / p.prevQuantity * 100).toFixed(1)
-                    : p.currentQuantity > 0 ? '100' : '0';
-                const velocity = (p.currentQuantity / 30).toFixed(2);
-                
-                return {
-                    ...p,
-                    growth: growth,
-                    velocity: velocity
-                };
-            })
-            .sort((a, b) => b.currentQuantity - a.currentQuantity);
-        
-    } catch (error) {
-        console.error("Error getting fast moving data:", error);
-        return [];
-    }
-}
-
-function addToProductSalesData(obj, key, brand, generic, item, originalRevenue, discountedRevenue, discountAmount) {
-    if (!obj[key]) {
-        obj[key] = {
-            brand: brand,
-            generic: generic,
-            quantity: 0,
-            originalRevenue: 0,
-            revenue: 0,
-            discountAmount: 0
-        };
-    }
-    obj[key].quantity += item.quantity || 0;
-    obj[key].originalRevenue += originalRevenue;
-    obj[key].revenue += discountedRevenue;
-    obj[key].discountAmount += discountAmount;
+    return processFastMovingProducts(selectedMonth, selectedYear);
 }
 
 // Utility Functions

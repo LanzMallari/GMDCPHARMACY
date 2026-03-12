@@ -7,16 +7,31 @@ if (!loggedInUserId) {
     window.location.href = 'index.html';
 }
 
+// Cache for stock items to reduce Firestore reads
+let stockItemsCache = null;
+let productsCache = null;
+let lastFetchTime = 0;
+const CACHE_DURATION = 30000; // 30 seconds cache
+
+// Notification state
+let notificationBadge = null;
+let notificationPopup = null;
+let notificationInterval = null;
+let lastPopupDismissed = 0;
+const NOTIFICATION_CHECK_INTERVAL = 60 * 60 * 1000; // 1 hour
+const POPUP_DISMISS_DURATION = 60 * 60 * 1000; // 1 hour
+
 // Initialize
 document.addEventListener('DOMContentLoaded', () => {
     initializeInventory();
     setupEventListeners();
+    initializeNotifications();
 });
 
 async function initializeInventory() {
     await loadUserData();
     updateDateTime();
-    loadInventory();
+    await loadInventory();
     setupSidebar();
 }
 
@@ -88,13 +103,592 @@ function removeOverlay() {
     if (overlay) overlay.remove();
 }
 
+// ==================== NOTIFICATION SYSTEM ====================
+
+function initializeNotifications() {
+    createNotificationElements();
+    checkNotifications();
+    
+    if (notificationInterval) {
+        clearInterval(notificationInterval);
+    }
+    notificationInterval = setInterval(checkNotifications, NOTIFICATION_CHECK_INTERVAL);
+}
+
+function createNotificationElements() {
+    const notificationContainer = document.querySelector('.notification');
+    if (!notificationContainer) return;
+    
+    // Redesign notification logo
+    notificationContainer.innerHTML = `
+        <div class="notification-wrapper" style="position: relative; cursor: pointer;">
+            <div class="notification-icon" style="width: 45px; height: 45px; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); border-radius: 12px; display: flex; align-items: center; justify-content: center; transition: all 0.3s ease; box-shadow: 0 4px 15px rgba(102, 126, 234, 0.3);">
+                <i class="fas fa-bell" style="color: white; font-size: 20px;"></i>
+            </div>
+            <span class="badge" style="position: absolute; top: -8px; right: -8px; background: #e74c3c; color: white; font-size: 12px; padding: 4px 8px; border-radius: 20px; min-width: 24px; text-align: center; font-weight: 600; border: 2px solid white; display: none; box-shadow: 0 2px 5px rgba(0,0,0,0.2);">0</span>
+        </div>
+    `;
+    
+    notificationBadge = notificationContainer.querySelector('.badge');
+    
+    // Add hover effect
+    const notificationIcon = notificationContainer.querySelector('.notification-icon');
+    notificationIcon.addEventListener('mouseenter', () => {
+        notificationIcon.style.transform = 'scale(1.05)';
+        notificationIcon.style.boxShadow = '0 6px 20px rgba(102, 126, 234, 0.4)';
+    });
+    
+    notificationIcon.addEventListener('mouseleave', () => {
+        notificationIcon.style.transform = 'scale(1)';
+        notificationIcon.style.boxShadow = '0 4px 15px rgba(102, 126, 234, 0.3)';
+    });
+    
+    // Create notification popup
+    if (!document.getElementById('notificationPopup')) {
+        const popup = document.createElement('div');
+        popup.id = 'notificationPopup';
+        popup.className = 'notification-popup';
+        popup.style.cssText = `
+            position: absolute;
+            top: 60px;
+            right: 0;
+            width: 420px;
+            background: white;
+            border-radius: 16px;
+            box-shadow: 0 10px 40px rgba(0,0,0,0.15);
+            z-index: 1000;
+            display: none;
+            animation: slideDown 0.3s ease;
+            border: 1px solid rgba(0,0,0,0.05);
+            overflow: hidden;
+        `;
+        
+        popup.innerHTML = `
+            <div class="notification-popup-header" style="padding: 20px; border-bottom: 1px solid #eef2f6; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);">
+                <div style="display: flex; justify-content: space-between; align-items: center;">
+                    <div style="display: flex; align-items: center; gap: 12px;">
+                        <div style="width: 40px; height: 40px; background: rgba(255,255,255,0.2); border-radius: 10px; display: flex; align-items: center; justify-content: center;">
+                            <i class="fas fa-bell" style="color: white; font-size: 18px;"></i>
+                        </div>
+                        <div>
+                            <h3 style="margin: 0; font-size: 16px; color: white; font-weight: 600;">Notifications</h3>
+                            <p style="margin: 2px 0 0; font-size: 12px; color: rgba(255,255,255,0.7);">Stay updated with alerts</p>
+                        </div>
+                    </div>
+                    <div style="display: flex; gap: 8px;">
+                        <button class="notification-refresh-btn" style="background: rgba(255,255,255,0.2); border: none; color: white; width: 36px; height: 36px; border-radius: 10px; cursor: pointer; display: flex; align-items: center; justify-content: center; transition: all 0.2s;">
+                            <i class="fas fa-sync-alt" style="font-size: 14px;"></i>
+                        </button>
+                        <button class="notification-close-btn" style="background: rgba(255,255,255,0.2); border: none; color: white; width: 36px; height: 36px; border-radius: 10px; cursor: pointer; display: flex; align-items: center; justify-content: center; transition: all 0.2s;">
+                            <i class="fas fa-times" style="font-size: 14px;"></i>
+                        </button>
+                    </div>
+                </div>
+            </div>
+            <div class="notification-popup-body" id="notificationPopupBody" style="padding: 15px; max-height: 400px; overflow-y: auto;">
+                <div class="loading" style="text-align: center; padding: 40px; color: #7f8c8d;">
+                    <i class="fas fa-spinner fa-spin" style="font-size: 32px; margin-bottom: 15px; color: #667eea;"></i>
+                    <p style="font-size: 14px;">Loading notifications...</p>
+                </div>
+            </div>
+            <div class="notification-popup-footer" style="padding: 15px 20px; border-top: 1px solid #eef2f6; background: #f8fafc;">
+                <div style="display: flex; justify-content: space-between; align-items: center;">
+                    <div style="display: flex; align-items: center; gap: 8px;">
+                        <i class="far fa-clock" style="color: #95a5a6; font-size: 12px;"></i>
+                        <span style="color: #7f8c8d; font-size: 12px;">Last checked: <span id="lastNotificationCheck">Never</span></span>
+                    </div>
+                    <button class="view-all-notifications" style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); border: none; color: white; padding: 8px 16px; border-radius: 20px; font-size: 12px; font-weight: 600; cursor: pointer; display: flex; align-items: center; gap: 6px; transition: all 0.2s;">
+                        <i class="fas fa-eye"></i> View All
+                    </button>
+                </div>
+            </div>
+        `;
+        
+        notificationContainer.style.position = 'relative';
+        notificationContainer.appendChild(popup);
+        
+        // Add animation keyframes (same as in pos.js)
+        const style = document.createElement('style');
+        style.textContent = `
+            @keyframes slideDown {
+                from {
+                    transform: translateY(-10px);
+                    opacity: 0;
+                }
+                to {
+                    transform: translateY(0);
+                    opacity: 1;
+                }
+            }
+            
+            .notification-item {
+                transition: all 0.2s ease;
+                border: 1px solid transparent;
+                margin-bottom: 8px;
+            }
+            
+            .notification-item:hover {
+                transform: translateX(-3px);
+                border-color: rgba(0,0,0,0.05);
+                box-shadow: 0 4px 12px rgba(0,0,0,0.05);
+            }
+            
+            .notification-refresh-btn:hover, .notification-close-btn:hover {
+                background: rgba(255,255,255,0.3) !important;
+                transform: rotate(90deg);
+            }
+            
+            .view-all-notifications:hover {
+                transform: translateY(-2px);
+                box-shadow: 0 4px 15px rgba(102, 126, 234, 0.4);
+            }
+            
+            #notificationPopupBody::-webkit-scrollbar {
+                width: 6px;
+            }
+            
+            #notificationPopupBody::-webkit-scrollbar-track {
+                background: #f1f1f1;
+                border-radius: 10px;
+            }
+            
+            #notificationPopupBody::-webkit-scrollbar-thumb {
+                background: #cbd5e0;
+                border-radius: 10px;
+            }
+            
+            #notificationPopupBody::-webkit-scrollbar-thumb:hover {
+                background: #a0aec0;
+            }
+            
+            @keyframes pulse {
+                0% {
+                    box-shadow: 0 0 0 2px #fff, 0 0 0 4px #e74c3c;
+                }
+                50% {
+                    box-shadow: 0 0 0 2px #fff, 0 0 0 8px #e74c3c;
+                }
+                100% {
+                    box-shadow: 0 0 0 2px #fff, 0 0 0 4px #e74c3c;
+                }
+            }
+        `;
+        document.head.appendChild(style);
+        
+        // Toggle popup on click
+        notificationContainer.addEventListener('click', (e) => {
+            e.stopPropagation();
+            toggleNotificationPopup();
+        });
+        
+        // Close button
+        popup.querySelector('.notification-close-btn').addEventListener('click', (e) => {
+            e.stopPropagation();
+            hideNotificationPopup();
+            lastPopupDismissed = Date.now();
+        });
+        
+        // Refresh button
+        popup.querySelector('.notification-refresh-btn').addEventListener('click', (e) => {
+            e.stopPropagation();
+            checkNotifications(true);
+        });
+        
+        // View all button
+        popup.querySelector('.view-all-notifications').addEventListener('click', (e) => {
+            e.stopPropagation();
+            window.location.href = 'reports.html';
+        });
+        
+        // Close popup when clicking outside
+        document.addEventListener('click', (e) => {
+            if (!popup.contains(e.target) && !notificationContainer.contains(e.target)) {
+                hideNotificationPopup();
+            }
+        });
+    }
+    
+    notificationPopup = document.getElementById('notificationPopup');
+}
+
+function toggleNotificationPopup() {
+    if (!notificationPopup) return;
+    
+    if (notificationPopup.style.display === 'none' || notificationPopup.style.display === '') {
+        notificationPopup.style.display = 'block';
+        loadNotificationDetails();
+    } else {
+        notificationPopup.style.display = 'none';
+    }
+}
+
+function hideNotificationPopup() {
+    if (notificationPopup) {
+        notificationPopup.style.display = 'none';
+    }
+}
+
+function showNotificationPopup() {
+    if (!notificationPopup) return;
+    
+    const now = Date.now();
+    if (now - lastPopupDismissed < POPUP_DISMISS_DURATION) {
+        return;
+    }
+    
+    notificationPopup.style.display = 'block';
+    loadNotificationDetails();
+    
+    setTimeout(() => {
+        if (notificationPopup && notificationPopup.style.display === 'block') {
+            notificationPopup.style.display = 'none';
+        }
+    }, 10000);
+}
+
+async function checkNotifications(forceRefresh = false) {
+    try {
+        const [productsSnapshot, stockItemsSnapshot] = await Promise.all([
+            getDocs(collection(db, "products")),
+            getDocs(collection(db, "stock_items"))
+        ]);
+        
+        const productsMap = new Map();
+        productsSnapshot.forEach(doc => {
+            productsMap.set(doc.id, doc.data());
+        });
+        
+        const today = new Date();
+        today.setHours(0, 0, 0, 0);
+        
+        const threeDaysFromNow = new Date(today);
+        threeDaysFromNow.setDate(threeDaysFromNow.getDate() + 3);
+        
+        const sevenDaysFromNow = new Date(today);
+        sevenDaysFromNow.setDate(sevenDaysFromNow.getDate() + 7);
+        
+        let expiringUrgent = 0;
+        let expiringWarning = 0;
+        let lowStockCount = 0;
+        
+        const expiringProducts = [];
+        const lowStockProducts = [];
+        
+        // Helper function for low stock threshold
+        function getLowStockThreshold(category) {
+            const categoryLower = (category || '').toLowerCase();
+            if (categoryLower === 'rx' || categoryLower === 'rx medicine') return 50;
+            if (categoryLower === 'over the counter' || categoryLower === 'otc') return 30;
+            if (categoryLower === 'food' || categoryLower === 'foods') return 5;
+            if (categoryLower === 'general merchandise' || categoryLower === 'merchandise') return 2;
+            return 10;
+        }
+        
+        function isLowStock(stock, category) {
+            if (stock === 0) return false;
+            const threshold = getLowStockThreshold(category);
+            return stock < threshold;
+        }
+        
+        // Process stock items for expiry
+        stockItemsSnapshot.forEach(doc => {
+            const item = doc.data();
+            if (item.expiryDate && item.status === 'available') {
+                const expiryDate = item.expiryDate.toDate();
+                expiryDate.setHours(0, 0, 0, 0);
+                
+                let productName = item.productName || 'Unknown';
+                if (item.productId && productsMap.has(item.productId)) {
+                    const product = productsMap.get(item.productId);
+                    productName = product.brand || product.name || productName;
+                }
+                
+                if (expiryDate <= threeDaysFromNow) {
+                    expiringUrgent++;
+                    expiringProducts.push({
+                        name: productName,
+                        serial: item.serialNumber,
+                        expiryDate: expiryDate,
+                        type: 'urgent',
+                        daysLeft: Math.ceil((expiryDate - today) / (1000 * 60 * 60 * 24))
+                    });
+                } else if (expiryDate <= sevenDaysFromNow) {
+                    expiringWarning++;
+                    expiringProducts.push({
+                        name: productName,
+                        serial: item.serialNumber,
+                        expiryDate: expiryDate,
+                        type: 'warning',
+                        daysLeft: Math.ceil((expiryDate - today) / (1000 * 60 * 60 * 24))
+                    });
+                }
+            }
+        });
+        
+        // Create available stock map for low stock check
+        const availableStockMap = new Map();
+        stockItemsSnapshot.forEach(doc => {
+            const item = doc.data();
+            if (item.status === 'available' && item.productId) {
+                availableStockMap.set(item.productId, (availableStockMap.get(item.productId) || 0) + 1);
+            }
+        });
+        
+        // Check for low stock
+        productsSnapshot.forEach(doc => {
+            const product = doc.data();
+            const productId = doc.id;
+            const actualStock = availableStockMap.get(productId) || 0;
+            
+            if (actualStock > 0 && isLowStock(actualStock, product.category)) {
+                lowStockCount++;
+                const productName = product.brand || product.name || 'Unknown';
+                const threshold = getLowStockThreshold(product.category);
+                lowStockProducts.push({
+                    name: productName,
+                    stock: actualStock,
+                    threshold: threshold
+                });
+            }
+        });
+        
+        // Sort notifications
+        expiringProducts.sort((a, b) => {
+            if (a.type === 'urgent' && b.type !== 'urgent') return -1;
+            if (a.type !== 'urgent' && b.type === 'urgent') return 1;
+            return a.daysLeft - b.daysLeft;
+        });
+        
+        lowStockProducts.sort((a, b) => (a.stock / a.threshold) - (b.stock / b.threshold));
+        
+        const totalNotifications = expiringUrgent + expiringWarning + lowStockCount;
+        
+        // Update notification badge
+        if (notificationBadge) {
+            notificationBadge.textContent = totalNotifications;
+            notificationBadge.style.display = totalNotifications > 0 ? 'inline' : 'none';
+            
+            if (expiringUrgent > 0) {
+                notificationBadge.style.background = '#e74c3c';
+                notificationBadge.style.boxShadow = '0 0 0 2px #fff, 0 0 0 4px #e74c3c';
+                notificationBadge.style.animation = 'pulse 2s infinite';
+            } else if (expiringWarning > 0 || lowStockCount > 0) {
+                notificationBadge.style.background = '#f39c12';
+                notificationBadge.style.boxShadow = '0 0 0 2px #fff, 0 0 0 4px #f39c12';
+            }
+        }
+        
+        // Store notification data
+        window.notificationData = {
+            expiringUrgent,
+            expiringWarning,
+            lowStockCount,
+            expiringProducts,
+            lowStockProducts,
+            lastCheck: new Date()
+        };
+        
+        const lastCheckSpan = document.getElementById('lastNotificationCheck');
+        if (lastCheckSpan) {
+            lastCheckSpan.textContent = formatTimeAgo(new Date());
+        }
+        
+        if (totalNotifications > 0) {
+            showNotificationPopup();
+        }
+        
+    } catch (error) {
+        console.error("Error checking notifications:", error);
+    }
+}
+
+function formatTimeAgo(date) {
+    const now = new Date();
+    const diffMs = now - date;
+    const diffMins = Math.floor(diffMs / 60000);
+    const diffHours = Math.floor(diffMs / 3600000);
+    
+    if (diffMins < 1) return 'Just now';
+    if (diffMins < 60) return `${diffMins} minute${diffMins > 1 ? 's' : ''} ago`;
+    if (diffHours < 24) return `${diffHours} hour${diffHours > 1 ? 's' : ''} ago`;
+    return date.toLocaleDateString();
+}
+
+function formatExpiryDate(date) {
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const diffDays = Math.ceil((date - today) / (1000 * 60 * 60 * 24));
+    
+    if (diffDays === 0) return 'Today';
+    if (diffDays === 1) return 'Tomorrow';
+    if (diffDays < 0) return 'Expired';
+    return `in ${diffDays} days`;
+}
+
+async function loadNotificationDetails() {
+    const popupBody = document.getElementById('notificationPopupBody');
+    if (!popupBody) return;
+    
+    if (!window.notificationData) {
+        await checkNotifications(true);
+    }
+    
+    const data = window.notificationData || {
+        expiringUrgent: 0,
+        expiringWarning: 0,
+        lowStockCount: 0,
+        expiringProducts: [],
+        lowStockProducts: []
+    };
+    
+    let html = '';
+    
+    if (data.expiringUrgent === 0 && data.expiringWarning === 0 && data.lowStockCount === 0) {
+        html = `
+            <div class="no-notifications" style="text-align: center; padding: 60px 20px;">
+                <div style="width: 80px; height: 80px; background: linear-gradient(135deg, #e0f2fe 0%, #bae6fd 100%); border-radius: 50%; display: flex; align-items: center; justify-content: center; margin: 0 auto 20px;">
+                    <i class="fas fa-check-circle" style="font-size: 40px; color: #0284c7;"></i>
+                </div>
+                <h4 style="margin: 0 0 10px; color: #2c3e50; font-size: 18px;">All Clear!</h4>
+                <p style="margin: 0; color: #7f8c8d; font-size: 14px;">No notifications at this time.</p>
+            </div>
+        `;
+    } else {
+        // Urgent expiring items
+        if (data.expiringProducts.filter(p => p.type === 'urgent').length > 0) {
+            html += `
+                <div style="margin-bottom: 20px;">
+                    <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; padding: 0 5px;">
+                        <div style="display: flex; align-items: center; gap: 8px;">
+                            <div style="width: 8px; height: 8px; background: #e74c3c; border-radius: 50%;"></div>
+                            <h4 style="margin: 0; font-size: 14px; color: #e74c3c; font-weight: 600;">URGENT - Expiring Soon</h4>
+                        </div>
+                        <span style="background: #fdf3f2; color: #e74c3c; padding: 4px 10px; border-radius: 20px; font-size: 11px; font-weight: 600;">${data.expiringProducts.filter(p => p.type === 'urgent').length} items</span>
+                    </div>
+            `;
+            
+            data.expiringProducts
+                .filter(p => p.type === 'urgent')
+                .forEach(product => {
+                    const expiryText = formatExpiryDate(product.expiryDate);
+                    html += `
+                        <div class="notification-item urgent" style="background: #fdf3f2; border-left: 4px solid #e74c3c; border-radius: 10px; padding: 15px; margin-bottom: 8px; cursor: pointer;" onclick="window.location.href='inventory.html'">
+                            <div style="display: flex; align-items: flex-start; gap: 12px;">
+                                <div style="width: 36px; height: 36px; background: rgba(231, 76, 60, 0.1); border-radius: 8px; display: flex; align-items: center; justify-content: center;">
+                                    <i class="fas fa-exclamation-triangle" style="color: #e74c3c; font-size: 16px;"></i>
+                                </div>
+                                <div style="flex: 1;">
+                                    <div style="font-weight: 600; color: #2c3e50; margin-bottom: 4px;">${product.name}</div>
+                                    <div style="font-size: 12px; color: #7f8c8d; display: flex; gap: 15px; flex-wrap: wrap;">
+                                        <span><i class="fas fa-barcode"></i> ${product.serial || 'N/A'}</span>
+                                        <span><i class="far fa-clock"></i> Expires ${expiryText}</span>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    `;
+                });
+            
+            html += `</div>`;
+        }
+        
+        // Warning expiring items
+        if (data.expiringProducts.filter(p => p.type === 'warning').length > 0) {
+            html += `
+                <div style="margin-bottom: 20px;">
+                    <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; padding: 0 5px;">
+                        <div style="display: flex; align-items: center; gap: 8px;">
+                            <div style="width: 8px; height: 8px; background: #f39c12; border-radius: 50%;"></div>
+                            <h4 style="margin: 0; font-size: 14px; color: #f39c12; font-weight: 600;">Expiring Soon</h4>
+                        </div>
+                        <span style="background: #fef9e7; color: #f39c12; padding: 4px 10px; border-radius: 20px; font-size: 11px; font-weight: 600;">${data.expiringProducts.filter(p => p.type === 'warning').length} items</span>
+                    </div>
+            `;
+            
+            data.expiringProducts
+                .filter(p => p.type === 'warning')
+                .forEach(product => {
+                    const expiryText = formatExpiryDate(product.expiryDate);
+                    html += `
+                        <div class="notification-item warning" style="background: #fef9e7; border-left: 4px solid #f39c12; border-radius: 10px; padding: 15px; margin-bottom: 8px; cursor: pointer;" onclick="window.location.href='inventory.html'">
+                            <div style="display: flex; align-items: flex-start; gap: 12px;">
+                                <div style="width: 36px; height: 36px; background: rgba(243, 156, 18, 0.1); border-radius: 8px; display: flex; align-items: center; justify-content: center;">
+                                    <i class="fas fa-clock" style="color: #f39c12; font-size: 16px;"></i>
+                                </div>
+                                <div style="flex: 1;">
+                                    <div style="font-weight: 600; color: #2c3e50; margin-bottom: 4px;">${product.name}</div>
+                                    <div style="font-size: 12px; color: #7f8c8d; display: flex; gap: 15px; flex-wrap: wrap;">
+                                        <span><i class="fas fa-barcode"></i> ${product.serial || 'N/A'}</span>
+                                        <span><i class="far fa-clock"></i> Expires ${expiryText}</span>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    `;
+                });
+            
+            html += `</div>`;
+        }
+        
+        // Low stock items
+        if (data.lowStockProducts.length > 0) {
+            html += `
+                <div style="margin-bottom: 20px;">
+                    <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; padding: 0 5px;">
+                        <div style="display: flex; align-items: center; gap: 8px;">
+                            <div style="width: 8px; height: 8px; background: #3498db; border-radius: 50%;"></div>
+                            <h4 style="margin: 0; font-size: 14px; color: #3498db; font-weight: 600;">Low Stock Alert</h4>
+                        </div>
+                        <span style="background: #e8f4fd; color: #3498db; padding: 4px 10px; border-radius: 20px; font-size: 11px; font-weight: 600;">${data.lowStockProducts.length} items</span>
+                    </div>
+            `;
+            
+            data.lowStockProducts.forEach(product => {
+                const percentRemaining = Math.round((product.stock / product.threshold) * 100);
+                const barColor = percentRemaining < 20 ? '#e74c3c' : (percentRemaining < 50 ? '#f39c12' : '#3498db');
+                
+                html += `
+                    <div class="notification-item low-stock" style="background: #e8f4fd; border-left: 4px solid #3498db; border-radius: 10px; padding: 15px; margin-bottom: 8px; cursor: pointer;" onclick="window.location.href='inventory.html'">
+                        <div style="display: flex; align-items: flex-start; gap: 12px;">
+                            <div style="width: 36px; height: 36px; background: rgba(52, 152, 219, 0.1); border-radius: 8px; display: flex; align-items: center; justify-content: center;">
+                                <i class="fas fa-boxes" style="color: #3498db; font-size: 16px;"></i>
+                            </div>
+                            <div style="flex: 1;">
+                                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
+                                    <span style="font-weight: 600; color: #2c3e50;">${product.name}</span>
+                                    <span style="background: ${barColor}; color: white; padding: 2px 8px; border-radius: 12px; font-size: 10px; font-weight: 600;">${percentRemaining}%</span>
+                                </div>
+                                <div style="font-size: 12px; color: #7f8c8d; margin-bottom: 8px;">
+                                    Stock: ${product.stock} / ${product.threshold} units
+                                </div>
+                                <div style="width: 100%; height: 6px; background: #e0e0e0; border-radius: 3px; overflow: hidden;">
+                                    <div style="width: ${percentRemaining}%; height: 100%; background: ${barColor}; border-radius: 3px; transition: width 0.3s ease;"></div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                `;
+            });
+            
+            html += `</div>`;
+        }
+    }
+    
+    popupBody.innerHTML = html;
+}
+
 // Helper function to determine low stock threshold based on category
 function getLowStockThreshold(category) {
     const categoryLower = (category || '').toLowerCase();
-    if (categoryLower === 'medicines' || categoryLower === 'medicine') {
-        return 100; // Medicines threshold - less than 100 is low stock
-    } else if (categoryLower === 'drinks' || categoryLower === 'beverages') {
-        return 20; // Drinks threshold - less than 20 is low stock
+    
+    if (categoryLower === 'rx' || categoryLower === 'rx medicine') {
+        return 50; // RX Medicines - less than 50 is low stock
+    } else if (categoryLower === 'over the counter' || categoryLower === 'otc' || categoryLower === 'over-the-counter') {
+        return 30; // Over the Counter - less than 30 is low stock
+    } else if (categoryLower === 'food' || categoryLower === 'foods' || categoryLower === 'food items') {
+        return 5; // Food items - less than 5 is low stock
+    } else if (categoryLower === 'general merchandise' || categoryLower === 'merchandise' || categoryLower === 'general') {
+        return 2; // General Merchandise - less than 2 is low stock
     } else {
         return 10; // Default threshold for other categories
     }
@@ -107,94 +701,107 @@ function isLowStock(stock, category) {
     return stock < threshold;
 }
 
+// Optimized function to fetch stock items with caching
+async function getStockItemsWithCache(forceRefresh = false) {
+    const now = Date.now();
+    if (!forceRefresh && stockItemsCache && (now - lastFetchTime) < CACHE_DURATION) {
+        return stockItemsCache;
+    }
+    
+    const snapshot = await getDocs(collection(db, "stock_items"));
+    stockItemsCache = snapshot;
+    lastFetchTime = now;
+    return snapshot;
+}
+
+// Optimized function to fetch products with caching
+async function getProductsWithCache(forceRefresh = false) {
+    const now = Date.now();
+    if (!forceRefresh && productsCache && (now - lastFetchTime) < CACHE_DURATION) {
+        return productsCache;
+    }
+    
+    const snapshot = await getDocs(collection(db, "products"));
+    productsCache = snapshot;
+    lastFetchTime = now;
+    return snapshot;
+}
+
 // ==================== INVENTORY FUNCTIONS ====================
-async function loadInventory() {
+async function loadInventory(forceRefresh = false) {
     try {
         console.log("%c🔍 LOADING INVENTORY WITH EXPIRY CHECK", "color: blue; font-size: 14px; font-weight: bold");
         
-        const productsSnapshot = await getDocs(collection(db, "products"));
+        // Show loading indicator
         const tableBody = document.getElementById('inventoryTableBody');
         if (!tableBody) return;
+        
+        tableBody.innerHTML = '<tr><td colspan="8" class="loading">Loading inventory...</td></tr>';
+        
+        // Use Promise.all for parallel fetching
+        const [productsSnapshot, stockItemsSnapshot] = await Promise.all([
+            getProductsWithCache(forceRefresh),
+            getDocs(collection(db, "stock_items"))
+        ]);
         
         tableBody.innerHTML = '';
         
         // If no products found, load from stock_items
         if (productsSnapshot.empty) {
             console.log("%c⚠️ No products found. Loading from stock_items...", "color: orange; font-size: 14px; font-weight: bold");
-            await loadInventoryFromStockItems();
+            await loadInventoryFromStockItems(stockItemsSnapshot);
             return;
         }
         
-        // For each product, calculate expiring count
-        for (const productDoc of productsSnapshot.docs) {
-            const product = { id: productDoc.id, ...productDoc.data() };
+        // Create a map of productId -> available stock count and expiry info
+        const stockMap = new Map();
+        const expiryMap = new Map();
+        
+        const today = new Date();
+        today.setHours(0, 0, 0, 0);
+        
+        const thirtyDaysFromNow = new Date(today);
+        thirtyDaysFromNow.setDate(thirtyDaysFromNow.getDate() + 30);
+        thirtyDaysFromNow.setHours(23, 59, 59, 999);
+        
+        // Process all stock items in one pass
+        stockItemsSnapshot.forEach(doc => {
+            const item = doc.data();
+            const productId = item.productId;
+            const status = item.status;
             
-            // Get available stock items
-            let availableStock = 0;
-            let expiringCount = 0;
-            let expiringItems = [];
+            if (!productId) return;
             
-            try {
-                // Query all available stock items for this product
-                const stockItemsQuery = query(
-                    collection(db, "stock_items"),
-                    where("productId", "==", product.id),
-                    where("status", "==", "available")
-                );
+            // Count available stock
+            if (status === 'available') {
+                stockMap.set(productId, (stockMap.get(productId) || 0) + 1);
                 
-                const stockItemsSnapshot = await getDocs(stockItemsQuery);
-                availableStock = stockItemsSnapshot.size;
-                
-                // Calculate expiring soon count (within 30 days)
-                const today = new Date();
-                today.setHours(0, 0, 0, 0);
-                
-                const thirtyDaysFromNow = new Date(today);
-                thirtyDaysFromNow.setDate(thirtyDaysFromNow.getDate() + 30);
-                thirtyDaysFromNow.setHours(23, 59, 59, 999);
-                
-                console.log(`%c📦 Product: ${product.brand || product.name} (ID: ${product.id})`, "color: purple; font-weight: bold");
-                console.log(`📅 Today: ${today.toLocaleDateString()}`);
-                console.log(`📅 30 days from now (inclusive): ${thirtyDaysFromNow.toLocaleDateString()}`);
-                console.log(`🔢 Total available items: ${stockItemsSnapshot.size}`);
-                
-                // Check each stock item for expiry
-                stockItemsSnapshot.forEach(itemDoc => {
-                    const item = itemDoc.data();
+                // Check expiry
+                if (item.expiryDate) {
+                    const expiryDate = item.expiryDate.toDate();
+                    expiryDate.setHours(0, 0, 0, 0);
                     
-                    if (item.expiryDate) {
-                        const expiryDate = item.expiryDate.toDate();
-                        expiryDate.setHours(0, 0, 0, 0);
-                        
-                        const daysUntilExpiry = Math.ceil((expiryDate - today) / (1000 * 60 * 60 * 24));
-                        
-                        // Check if expiry date is within the next 30 days
-                        if (expiryDate <= thirtyDaysFromNow) {
-                            expiringCount++;
-                            expiringItems.push({
-                                serial: item.serialNumber,
-                                expiry: expiryDate.toLocaleDateString(),
-                                daysLeft: daysUntilExpiry
-                            });
-                            console.log(`   ✅ EXPIRING SOON: ${item.serialNumber} - Expires: ${expiryDate.toLocaleDateString()} (${daysUntilExpiry} days left)`);
-                        } else {
-                            console.log(`   ❌ NOT EXPIRING SOON: ${item.serialNumber} - Expires: ${expiryDate.toLocaleDateString()} (${daysUntilExpiry} days left)`);
-                        }
-                    } else {
-                        console.log(`   ℹ️ NO EXPIRY DATE: ${item.serialNumber}`);
+                    if (expiryDate <= thirtyDaysFromNow) {
+                        const expiringInfo = expiryMap.get(productId) || { count: 0, items: [] };
+                        expiringInfo.count++;
+                        expiringInfo.items.push({
+                            serial: item.serialNumber,
+                            expiry: expiryDate.toLocaleDateString(),
+                            daysLeft: Math.ceil((expiryDate - today) / (1000 * 60 * 60 * 24))
+                        });
+                        expiryMap.set(productId, expiringInfo);
                     }
-                });
-                
-                console.log(`📊 Expiring count for ${product.brand}: ${expiringCount}`);
-                if (expiringItems.length > 0) {
-                    console.log("Expiring items details:", expiringItems);
                 }
-                console.log("---");
-                
-            } catch (error) {
-                console.log("Error getting stock items:", error);
-                availableStock = product.stock || 0;
             }
+        });
+        
+        // Process each product
+        const rows = [];
+        productsSnapshot.forEach(doc => {
+            const product = { id: doc.id, ...doc.data() };
+            
+            const availableStock = stockMap.get(product.id) || 0;
+            const expiringInfo = expiryMap.get(product.id) || { count: 0, items: [] };
             
             // Determine stock status class based on category-specific threshold
             const isLow = isLowStock(availableStock, product.category);
@@ -216,9 +823,9 @@ async function loadInventory() {
             // Expiry display
             let expiryDisplay = '<span class="no-expiry">—</span>';
             
-            if (expiringCount > 0) {
-                expiryDisplay = `<span class="expiry-badge expiring-soon" title="${expiringCount} item(s) expiring within 30 days\n${expiringItems.map(i => `${i.serial}: ${i.expiry} (${i.daysLeft} days)`).join('\n')}">
-                    <i class="fas fa-exclamation-triangle"></i> ${expiringCount}
+            if (expiringInfo.count > 0) {
+                expiryDisplay = `<span class="expiry-badge expiring-soon" title="${expiringInfo.count} item(s) expiring within 30 days\n${expiringInfo.items.map(i => `${i.serial}: ${i.expiry} (${i.daysLeft} days)`).join('\n')}">
+                    <i class="fas fa-exclamation-triangle"></i> ${expiringInfo.count}
                 </span>`;
             }
             
@@ -226,12 +833,19 @@ async function loadInventory() {
             const brandName = product.brand || product.name || 'N/A';
             const genericName = product.generic || 'N/A';
             
+            // Format category for display
+            let displayCategory = product.category || 'N/A';
+            if (displayCategory === 'rx') displayCategory = 'RX';
+            else if (displayCategory === 'over the counter') displayCategory = 'Over the Counter';
+            else if (displayCategory === 'food') displayCategory = 'Food';
+            else if (displayCategory === 'general merchandise') displayCategory = 'General Merchandise';
+            
             const row = document.createElement('tr');
             row.innerHTML = `
                 <td>${product.code || 'N/A'}</td>
                 <td>${brandName}</td>
                 <td>${genericName}</td>
-                <td>${product.category || 'N/A'}</td>
+                <td>${displayCategory}</td>
                 <td>₱${(product.price || 0).toFixed(2)}</td>
                 <td class="${stockClass}"${stockTooltip}>${stockStatus}</td>
                 <td>${expiryDisplay}</td>
@@ -241,8 +855,11 @@ async function loadInventory() {
                     <button class="btn-icon delete-product" title="Delete Product" data-id="${product.id}"><i class="fas fa-trash"></i></button>
                 </td>
             `;
-            tableBody.appendChild(row);
-        }
+            rows.push(row);
+        });
+        
+        // Append all rows at once
+        rows.forEach(row => tableBody.appendChild(row));
         
         // Add mobile data labels
         document.querySelectorAll('#inventoryTableBody tr').forEach(row => {
@@ -273,15 +890,15 @@ async function loadInventory() {
     } catch (error) {
         console.error("Error loading inventory:", error);
         showNotification('Error loading inventory', 'error');
+        document.getElementById('inventoryTableBody').innerHTML = '<tr><td colspan="8" class="error">Error loading inventory</td></tr>';
     }
 }
 
-// New function to load inventory directly from stock_items
-async function loadInventoryFromStockItems() {
+// Optimized function to load inventory directly from stock_items
+async function loadInventoryFromStockItems(stockItemsSnapshot) {
     try {
         console.log("%c📦 Loading inventory from stock_items collection...", "color: purple; font-size: 14px; font-weight: bold");
         
-        const stockItemsSnapshot = await getDocs(collection(db, "stock_items"));
         const tableBody = document.getElementById('inventoryTableBody');
         
         if (stockItemsSnapshot.empty) {
@@ -291,11 +908,16 @@ async function loadInventoryFromStockItems() {
         
         // Group stock items by product
         const productGroups = new Map();
+        const today = new Date();
+        today.setHours(0, 0, 0, 0);
+        const thirtyDaysFromNow = new Date(today);
+        thirtyDaysFromNow.setDate(thirtyDaysFromNow.getDate() + 30);
+        thirtyDaysFromNow.setHours(23, 59, 59, 999);
         
         stockItemsSnapshot.forEach(doc => {
             const item = { id: doc.id, ...doc.data() };
             
-            // Create a unique key for this product (use productId or combination of name+generic)
+            // Create a unique key for this product
             const productKey = item.productId || `${item.productName}-${item.productGeneric}`;
             
             if (!productGroups.has(productKey)) {
@@ -321,15 +943,8 @@ async function loadInventoryFromStockItems() {
                 
                 // Check for expiring soon
                 if (item.expiryDate) {
-                    const today = new Date();
-                    today.setHours(0, 0, 0, 0);
-                    
                     const expiryDate = item.expiryDate.toDate();
                     expiryDate.setHours(0, 0, 0, 0);
-                    
-                    const thirtyDaysFromNow = new Date(today);
-                    thirtyDaysFromNow.setDate(thirtyDaysFromNow.getDate() + 30);
-                    thirtyDaysFromNow.setHours(23, 59, 59, 999);
                     
                     if (expiryDate <= thirtyDaysFromNow) {
                         group.expiringCount++;
@@ -341,6 +956,7 @@ async function loadInventoryFromStockItems() {
         console.log(`Found ${productGroups.size} unique product groups from stock items`);
         
         // Display each product group
+        const rows = [];
         for (const [key, group] of productGroups) {
             // Get a sample item for additional data
             const sampleItem = group.stockItems[0] || {};
@@ -377,15 +993,19 @@ async function loadInventoryFromStockItems() {
             // Price display
             const price = group.price || sampleItem.productPrice || 0;
             
-            // Discount status (default to discountable for stock items)
-            const discountStatus = '<span class="discount-badge-table"><i class="fas fa-tag"></i> Discountable</span>';
+            // Format category for display
+            let displayCategory = group.category || 'Uncategorized';
+            if (displayCategory.toLowerCase() === 'rx') displayCategory = 'RX';
+            else if (displayCategory.toLowerCase() === 'over the counter') displayCategory = 'Over the Counter';
+            else if (displayCategory.toLowerCase() === 'food') displayCategory = 'Food';
+            else if (displayCategory.toLowerCase() === 'general merchandise') displayCategory = 'General Merchandise';
             
             const row = document.createElement('tr');
             row.innerHTML = `
                 <td>${productCode}</td>
                 <td>${group.brand}</td>
                 <td>${group.generic}</td>
-                <td>${group.category}</td>
+                <td>${displayCategory}</td>
                 <td>₱${(price).toFixed(2)}</td>
                 <td class="${stockClass}"${stockTooltip}>${stockStatus}</td>
                 <td>${expiryDisplay}</td>
@@ -395,8 +1015,11 @@ async function loadInventoryFromStockItems() {
                     <button class="btn-icon delete-group" title="Delete All Items" data-product-key="${key}"><i class="fas fa-trash"></i></button>
                 </td>
             `;
-            tableBody.appendChild(row);
+            rows.push(row);
         }
+        
+        // Append all rows at once
+        rows.forEach(row => tableBody.appendChild(row));
         
         // Add mobile data labels
         addMobileLabels();
@@ -434,7 +1057,7 @@ async function loadInventoryFromStockItems() {
     }
 }
 
-// Function to view stock items by product key
+// Function to view stock items by product key (optimized)
 async function viewStockItemsByProductKey(productKey, brandName) {
     try {
         // Get all stock items
@@ -938,8 +1561,8 @@ window.returnSoldItem = async function(stockItemId) {
         
         showNotification('Item returned to inventory successfully', 'success');
         
-        // Refresh views
-        loadInventory();
+        // Refresh views - use force refresh to bypass cache
+        await loadInventory(true);
         
         // Close modal if open
         const modal = document.getElementById('stockItemsModal');
@@ -1023,8 +1646,8 @@ window.markStockAsSold = async function(stockItemId) {
         
         showNotification('Stock item marked as sold', 'success');
         
-        // Refresh views
-        loadInventory();
+        // Refresh views with force refresh
+        await loadInventory(true);
         
         // Close modal if open
         const modal = document.getElementById('stockItemsModal');
@@ -1079,7 +1702,9 @@ window.deleteStockItem = async function(stockItemId) {
         }
         
         showNotification('Stock item deleted', 'success');
-        loadInventory();
+        
+        // Refresh views with force refresh
+        await loadInventory(true);
         
         // Close modal if open
         const modal = document.getElementById('stockItemsModal');
@@ -1126,6 +1751,9 @@ function setupInventoryFilters() {
     const categoryFilter = document.getElementById('categoryFilter');
     const stockFilter = document.getElementById('stockFilter');
     
+    // Debounce search input to improve performance
+    let searchTimeout;
+    
     const filterFunction = () => {
         const searchTerm = searchInput?.value.toLowerCase().trim() || '';
         const category = categoryFilter?.value || '';
@@ -1156,7 +1784,13 @@ function setupInventoryFilters() {
         });
     };
     
-    if (searchInput) searchInput.addEventListener('input', filterFunction);
+    if (searchInput) {
+        searchInput.addEventListener('input', () => {
+            clearTimeout(searchTimeout);
+            searchTimeout = setTimeout(filterFunction, 300);
+        });
+    }
+    
     if (categoryFilter) categoryFilter.addEventListener('change', filterFunction);
     if (stockFilter) stockFilter.addEventListener('change', filterFunction);
 }
@@ -1177,7 +1811,15 @@ async function editProduct(productId) {
         document.getElementById('productCode').value = product.code || '';
         document.getElementById('productBrand').value = product.brand || '';
         document.getElementById('productGeneric').value = product.generic || '';
-        document.getElementById('productCategory').value = product.category || '';
+        
+        // Handle category display
+        let categoryValue = product.category || '';
+        if (categoryValue === 'rx') categoryValue = 'rx';
+        else if (categoryValue === 'over the counter') categoryValue = 'over the counter';
+        else if (categoryValue === 'food') categoryValue = 'food';
+        else if (categoryValue === 'general merchandise') categoryValue = 'general merchandise';
+        
+        document.getElementById('productCategory').value = categoryValue;
         document.getElementById('productPrice').value = product.price || 0;
         document.getElementById('productStock').value = product.stock || 0;
         
@@ -1236,7 +1878,11 @@ async function deleteProduct(productId) {
             });
             
             showNotification('Product and all stock items deleted successfully', 'success');
-            loadInventory();
+            
+            // Clear cache and reload
+            productsCache = null;
+            stockItemsCache = null;
+            await loadInventory(true);
             
         } catch (error) {
             console.error("Error deleting product:", error);
@@ -1260,11 +1906,20 @@ if (productForm) {
             const stockQuantity = parseInt(document.getElementById('productStock')?.value) || 0;
             const expiryDateInput = document.getElementById('productExpiry')?.value;
             
+            // Get category value
+            let category = document.getElementById('productCategory')?.value || '';
+            
+            // Ensure category is stored in consistent format
+            if (category === 'rx') category = 'rx';
+            else if (category === 'over the counter') category = 'over the counter';
+            else if (category === 'food') category = 'food';
+            else if (category === 'general merchandise') category = 'general merchandise';
+            
             const productData = {
                 code: document.getElementById('productCode')?.value || '',
                 brand: document.getElementById('productBrand')?.value || '',
                 generic: document.getElementById('productGeneric')?.value || '',
-                category: document.getElementById('productCategory')?.value || '',
+                category: category,
                 price: parseFloat(document.getElementById('productPrice')?.value) || 0,
                 stock: stockQuantity,
                 discountable: discountable,
@@ -1313,6 +1968,7 @@ if (productForm) {
                             productId: productRef.id,
                             productName: productData.brand,
                             productGeneric: productData.generic,
+                            productCategory: productData.category,
                             batchNumber: `BATCH-${new Date().toISOString().slice(0,10)}`,
                             serialNumber: serialNumber,
                             status: 'available',
@@ -1353,7 +2009,10 @@ if (productForm) {
             productForm.dataset.editId = '';
             document.getElementById('discountableYes').checked = true;
             
-            loadInventory();
+            // Clear cache and reload
+            productsCache = null;
+            stockItemsCache = null;
+            await loadInventory(true);
             
         } catch (error) {
             console.error("Error saving product:", error);
@@ -1435,6 +2094,13 @@ document.addEventListener('DOMContentLoaded', () => {
                 resultsDiv.innerHTML = '';
                 
                 results.slice(0, 10).forEach(product => {
+                    // Format category for display
+                    let displayCategory = product.category || 'N/A';
+                    if (displayCategory === 'rx') displayCategory = 'RX';
+                    else if (displayCategory === 'over the counter') displayCategory = 'Over the Counter';
+                    else if (displayCategory === 'food') displayCategory = 'Food';
+                    else if (displayCategory === 'general merchandise') displayCategory = 'General Merchandise';
+                    
                     const resultDiv = document.createElement('div');
                     resultDiv.className = 'product-result-item';
                     resultDiv.dataset.productId = product.id;
@@ -1443,6 +2109,7 @@ document.addEventListener('DOMContentLoaded', () => {
                         <div class="product-result-details">
                             <span class="product-result-code">Code: ${product.code || 'N/A'}</span>
                             <span>Generic: ${product.generic || 'N/A'}</span>
+                            <span>Category: ${displayCategory}</span>
                             <span>Stock: ${product.stock || 0}</span>
                             <span>Price: ₱${(product.price || 0).toFixed(2)}</span>
                         </div>
@@ -1489,6 +2156,7 @@ document.addEventListener('DOMContentLoaded', () => {
                         productId: selectedProduct.id,
                         productName: selectedProduct.brand,
                         productGeneric: selectedProduct.generic,
+                        productCategory: selectedProduct.category,
                         batchNumber: `BATCH-${new Date().toISOString().slice(0,10)}`,
                         serialNumber: serialNumber,
                         status: 'available',
@@ -1537,7 +2205,10 @@ document.addEventListener('DOMContentLoaded', () => {
                 document.getElementById('existingProductResults').innerHTML = '';
                 window.selectedProductForStock = null;
                 
-                loadInventory();
+                // Clear cache and reload
+                productsCache = null;
+                stockItemsCache = null;
+                await loadInventory(true);
                 
             } catch (error) {
                 console.error("Error adding stock items:", error);
@@ -1628,7 +2299,10 @@ function setupEventListeners() {
 window.debugInventory = async function() {
     console.clear();
     console.log("%c🔍 FORCING INVENTORY RELOAD WITH DEBUG...", "color: blue; font-size: 16px; font-weight: bold");
-    await loadInventory();
+    // Clear cache and force refresh
+    productsCache = null;
+    stockItemsCache = null;
+    await loadInventory(true);
 };
 
 window.checkExpiryData = async function() {
