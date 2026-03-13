@@ -136,7 +136,7 @@ async function loadSalesHistory(sortOrder = 'desc') {
                 }
             }
             
-            // FIXED: Only show expiring badge if the sale actually had expiring items
+            // Only show expiring badge if the sale actually had expiring items
             const hadExpiring = sale.hadExpiringItems ? 
                 '<span class="expiring-sale-badge"><i class="fas fa-clock"></i> Had Expiring</span>' : '';
             
@@ -340,7 +340,7 @@ function createEnhancedExchangeModal() {
                             <h4>Replacement Item</h4>
                             <div class="form-group">
                                 <label>Search Product</label>
-                                <input type="text" id="productSearchInput" class="form-control" placeholder="Type to search products...">
+                                <input type="text" id="productSearchInput" class="form-control" placeholder="Type product name...">
                             </div>
                             
                             <div class="product-search-results" id="productSearchResults"></div>
@@ -660,13 +660,30 @@ function addEnhancedExchangeStyles() {
         }
         
         .product-result-item {
-            padding: 10px;
+            padding: 12px;
             border-bottom: 1px solid #f0f0f0;
             cursor: pointer;
+            transition: background 0.2s;
         }
         
         .product-result-item:hover {
             background: #f0f7ff;
+        }
+        
+        .product-result-item.selected {
+            background: #e3f2fd;
+            border-left: 3px solid #2196F3;
+        }
+        
+        .product-name {
+            font-weight: 600;
+            color: #2c3e50;
+            margin-bottom: 4px;
+        }
+        
+        .product-price {
+            font-size: 12px;
+            color: #27ae60;
         }
         
         .price-comparison-card {
@@ -1036,23 +1053,31 @@ async function loadReplacementProductsEnhanced() {
         
         select.innerHTML = '<option value="">-- Select replacement product --</option>';
         
+        const sortedProducts = [];
         productsSnapshot.forEach(doc => {
-            const product = doc.data();
+            const product = { id: doc.id, ...doc.data() };
             if (product.stock > 0) {
-                const option = document.createElement('option');
-                option.value = doc.id;
-                option.dataset.price = product.price || 0;
-                option.dataset.brand = product.brand || product.name || 'Unnamed';
-                option.dataset.generic = product.generic || '';
-                option.dataset.stock = product.stock || 0;
-                
-                const displayName = product.generic ? 
-                    `${product.brand || product.name} (${product.generic})` : 
-                    (product.brand || product.name);
-                
-                option.textContent = `${displayName} - ₱${(product.price || 0).toFixed(2)} (Stock: ${product.stock})`;
-                select.appendChild(option);
+                sortedProducts.push(product);
             }
+        });
+        
+        // Sort alphabetically by brand name
+        sortedProducts.sort((a, b) => (a.brand || '').localeCompare(b.brand || ''));
+        
+        sortedProducts.forEach(product => {
+            const option = document.createElement('option');
+            option.value = product.id;
+            option.dataset.price = product.price || 0;
+            option.dataset.brand = product.brand || product.name || 'Unnamed';
+            option.dataset.generic = product.generic || '';
+            option.dataset.stock = product.stock || 0;
+            
+            const displayName = product.generic ? 
+                `${product.brand || product.name} (${product.generic})` : 
+                (product.brand || product.name);
+            
+            option.textContent = `${displayName} - ₱${(product.price || 0).toFixed(2)} (Stock: ${product.stock})`;
+            select.appendChild(option);
         });
         
         document.getElementById('exchangeQuantityEnhanced').value = 1;
@@ -1077,15 +1102,18 @@ async function searchProductsEnhanced(searchTerm) {
             if (product.stock > 0) {
                 const brand = (product.brand || '').toLowerCase();
                 const name = (product.name || '').toLowerCase();
+                const generic = (product.generic || '').toLowerCase();
                 
-                if (brand.includes(searchTerm.toLowerCase()) || name.includes(searchTerm.toLowerCase())) {
+                if (brand.includes(searchTerm.toLowerCase()) || 
+                    name.includes(searchTerm.toLowerCase()) ||
+                    generic.includes(searchTerm.toLowerCase())) {
                     filtered.push({ id: doc.id, ...product });
                 }
             }
         });
         
         if (filtered.length === 0) {
-            resultsDiv.innerHTML = '<div style="text-align: center; padding: 10px;">No products found</div>';
+            resultsDiv.innerHTML = '<div class="no-results" style="text-align: center; padding: 20px; color: #7f8c8d;">No products found</div>';
             resultsDiv.classList.add('active');
             return;
         }
@@ -1094,17 +1122,59 @@ async function searchProductsEnhanced(searchTerm) {
         filtered.slice(0, 10).forEach(product => {
             const itemDiv = document.createElement('div');
             itemDiv.className = 'product-result-item';
+            itemDiv.dataset.productId = product.id;
+            itemDiv.dataset.price = product.price;
+            itemDiv.dataset.brand = product.brand || product.name;
+            itemDiv.dataset.generic = product.generic || '';
+            itemDiv.dataset.stock = product.stock;
+            
+            const displayName = product.generic ? 
+                `${product.brand || product.name} (${product.generic})` : 
+                (product.brand || product.name);
+            
             itemDiv.innerHTML = `
-                <div class="product-name">${product.brand || product.name} ${product.generic ? `(${product.generic})` : ''}</div>
+                <div class="product-name">${displayName}</div>
                 <div class="product-price">₱${(product.price || 0).toFixed(2)} • Stock: ${product.stock}</div>
             `;
+            
             itemDiv.addEventListener('click', () => {
+                // Find and select the option in the dropdown
                 const select = document.getElementById('newProductSelectEnhanced');
-                select.value = product.id;
-                document.getElementById('productSearchInput').value = '';
+                const options = Array.from(select.options);
+                const matchingOption = options.find(opt => opt.value === product.id);
+                
+                if (matchingOption) {
+                    select.value = product.id;
+                } else {
+                    // If not in dropdown, create temporary option
+                    const option = document.createElement('option');
+                    option.value = product.id;
+                    option.dataset.price = product.price || 0;
+                    option.dataset.brand = product.brand || product.name || 'Unnamed';
+                    option.dataset.generic = product.generic || '';
+                    option.dataset.stock = product.stock || 0;
+                    
+                    const displayName = product.generic ? 
+                        `${product.brand || product.name} (${product.generic})` : 
+                        (product.brand || product.name);
+                    
+                    option.textContent = `${displayName} - ₱${(product.price || 0).toFixed(2)} (Stock: ${product.stock})`;
+                    select.appendChild(option);
+                    select.value = product.id;
+                }
+                
+                document.getElementById('productSearchInput').value = displayName;
                 resultsDiv.classList.remove('active');
+                resultsDiv.innerHTML = '';
                 calculateEnhancedPriceDifference();
+                
+                // Remove selected class from all items
+                document.querySelectorAll('.product-result-item').forEach(item => {
+                    item.classList.remove('selected');
+                });
+                itemDiv.classList.add('selected');
             });
+            
             resultsDiv.appendChild(itemDiv);
         });
         
@@ -1678,13 +1748,13 @@ async function viewSaleDetails(saleId) {
             minute: '2-digit'
         });
         
-        // Add discount type display
+        // Add discount type display - FIXED: Update YAKAP to 30%
         let discountInfo = '';
         if (sale.discountType) {
             if (sale.discountType === 'seniorPWD') {
                 discountInfo = '<p class="discount-info senior-pwd"><i class="fas fa-id-card"></i> Senior/PWD Discount (20%)</p>';
             } else if (sale.discountType === 'yakap') {
-                discountInfo = '<p class="discount-info yakap"><i class="fas fa-heart"></i> YAKAP Discount (10%)</p>';
+                discountInfo = '<p class="discount-info yakap"><i class="fas fa-heart"></i> YAKAP Discount (30%)</p>';
             }
         }
         
@@ -1696,7 +1766,7 @@ async function viewSaleDetails(saleId) {
                 const exchangedDisplay = item.exchangedQuantity ? 
                     `<span class="exchanged-badge">Exchanged: ${item.exchangedQuantity}</span>` : '';
                 
-                // FIXED: Show expiring badge at item level
+                // Show expiring badge at item level
                 const expiringBadge = item.wasExpiring ? 
                     '<span class="item-expiring-badge-detail"><i class="fas fa-clock"></i> Expiring</span>' : '';
                 
@@ -1805,7 +1875,7 @@ if (salesDateFilter) {
                     }
                 }
                 
-                // FIXED: Only show expiring badge if the sale actually had expiring items
+                // Only show expiring badge if the sale actually had expiring items
                 const hadExpiring = sale.hadExpiringItems ? 
                     '<span class="expiring-sale-badge"><i class="fas fa-clock"></i> Had Expiring</span>' : '';
                 
