@@ -14,18 +14,119 @@ let authRequestCount = 0;
 let lastRequestReset = Date.now();
 const MAX_REQUESTS_PER_MINUTE = 5; // Maximum 5 requests per minute
 
-// Check authentication status
-const loggedInUserId = localStorage.getItem('loggedInUserId');
+// ==================== BACK BUTTON / CACHE FIX ====================
+// This must come FIRST before any redirects
 
-// Redirect if not logged in (except for auth pages)
-const currentPath = window.location.pathname;
-const isAuthPage = currentPath.includes('index.html') || currentPath.includes('signup.html') || currentPath === '/' || currentPath.endsWith('/');
-
-if (!loggedInUserId && !isAuthPage) {
-    window.location.href = 'index.html';
+// Function to check auth status and handle redirects
+function handleAuthRedirect() {
+    const loggedInUserId = localStorage.getItem('loggedInUserId');
+    const currentPath = window.location.pathname;
+    const isAuthPage = currentPath.includes('index.html') || currentPath.includes('signup.html') || currentPath === '/' || currentPath.endsWith('/');
+    
+    console.log("Auth check:", { loggedInUserId, currentPath, isAuthPage });
+    
+    // If user is logged in and on auth page, redirect to dashboard
+    if (loggedInUserId && isAuthPage) {
+        console.log("User is logged in but on auth page, redirecting to dashboard");
+        window.location.href = 'dashboard.html';
+        return true;
+    }
+    // If user is not logged in and on protected page, redirect to login
+    else if (!loggedInUserId && !isAuthPage) {
+        console.log("User is not logged in but on protected page, redirecting to login");
+        window.location.href = 'index.html';
+        return true;
+    }
+    return false;
 }
 
-// Rate limiting function
+// Handle pageshow event (back/forward cache)
+window.addEventListener('pageshow', function(event) {
+    // If the page is loaded from cache (bfcache)
+    if (event.persisted) {
+        console.log("Page loaded from back/forward cache");
+        handleAuthRedirect();
+    }
+});
+
+// Also check on initial page load
+document.addEventListener('DOMContentLoaded', function() {
+    handleAuthRedirect();
+});
+
+// ==================== SESSION KEEP-ALIVE ====================
+let tokenRefreshInterval = null;
+let activityCheckInterval = null;
+let lastActivity = Date.now();
+
+// Function to refresh Firebase token
+async function refreshAuthToken() {
+    try {
+        const user = auth?.currentUser;
+        if (user) {
+            // Force token refresh
+            await user.getIdToken(true);
+            console.log("Auth token refreshed at", new Date().toLocaleTimeString());
+            lastActivity = Date.now();
+        }
+    } catch (error) {
+        console.error("Error refreshing token:", error);
+        
+        // If refresh fails due to expired token, redirect to login
+        if (error.code === 'auth/user-token-expired') {
+            console.log("Token expired, redirecting to login...");
+            localStorage.removeItem('loggedInUserId');
+            window.location.href = 'index.html';
+        }
+    }
+}
+
+// Initialize session keep-alive
+function initSessionKeepAlive() {
+    // Clear any existing intervals
+    if (tokenRefreshInterval) {
+        clearInterval(tokenRefreshInterval);
+    }
+    if (activityCheckInterval) {
+        clearInterval(activityCheckInterval);
+    }
+
+    const loggedInUserId = localStorage.getItem('loggedInUserId');
+    if (!loggedInUserId) return;
+
+    // Update last activity on user interaction
+    const updateLastActivity = () => {
+        lastActivity = Date.now();
+    };
+
+    // Add activity listeners
+    const activityEvents = ['mousedown', 'keydown', 'touchstart', 'scroll', 'mousemove'];
+    activityEvents.forEach(event => {
+        window.addEventListener(event, updateLastActivity);
+    });
+
+    // Refresh token every 45 minutes (Firebase tokens expire after 1 hour)
+    tokenRefreshInterval = setInterval(refreshAuthToken, 45 * 60 * 1000);
+
+    // Initial token refresh
+    refreshAuthToken();
+    
+    console.log("Session keep-alive initialized");
+}
+
+// Stop session keep-alive (call on logout)
+function stopSessionKeepAlive() {
+    if (tokenRefreshInterval) {
+        clearInterval(tokenRefreshInterval);
+        tokenRefreshInterval = null;
+    }
+    if (activityCheckInterval) {
+        clearInterval(activityCheckInterval);
+        activityCheckInterval = null;
+    }
+}
+
+// ==================== RATE LIMITING FUNCTIONS ====================
 function checkRateLimit() {
     const now = Date.now();
     
@@ -50,7 +151,7 @@ function checkRateLimit() {
     authRequestCount++;
 }
 
-// Show message function
+// ==================== MESSAGE FUNCTION ====================
 function showMessage(message, isSuccess = false) {
     const messageDiv = document.getElementById('message');
     if (!messageDiv) return;
@@ -65,7 +166,7 @@ function showMessage(message, isSuccess = false) {
     }, 5000);
 }
 
-// Login form handler
+// ==================== LOGIN FORM HANDLER ====================
 const loginForm = document.getElementById('loginForm');
 if (loginForm) {
     loginForm.addEventListener('submit', async (e) => {
@@ -101,6 +202,9 @@ if (loginForm) {
             
             showMessage('Login successful! Redirecting...', true);
             
+            // Initialize session keep-alive after successful login
+            initSessionKeepAlive();
+            
             setTimeout(() => {
                 window.location.href = 'dashboard.html';
             }, 1500);
@@ -135,7 +239,7 @@ if (loginForm) {
     });
 }
 
-// Signup form handler
+// ==================== SIGNUP FORM HANDLER ====================
 const signupForm = document.getElementById('signupForm');
 if (signupForm) {
     signupForm.addEventListener('submit', async (e) => {
@@ -239,7 +343,7 @@ if (signupForm) {
     });
 }
 
-// Forgot password function
+// ==================== FORGOT PASSWORD ====================
 window.forgotPassword = async function() {
     const email = prompt('Please enter your email address:');
     if (!email) return;
@@ -267,13 +371,14 @@ window.forgotPassword = async function() {
     }
 };
 
-// Logout function
+// ==================== LOGOUT FUNCTION ====================
 const logoutButton = document.getElementById('logout');
 if (logoutButton) {
     logoutButton.addEventListener('click', async () => {
         try {
             await signOut(auth);
             localStorage.removeItem('loggedInUserId');
+            stopSessionKeepAlive(); // Stop session keep-alive on logout
             window.location.href = 'index.html';
         } catch (error) {
             console.error("Error signing out:", error);
@@ -282,7 +387,7 @@ if (logoutButton) {
     });
 }
 
-// Fetch user data for display
+// ==================== FETCH USER DATA ====================
 export async function fetchUserData(userId) {
     try {
         const docRef = doc(db, "users", userId);
@@ -320,31 +425,17 @@ export async function fetchUserData(userId) {
     }
 }
 
-// Auto logout after inactivity (optional)
-let inactivityTimer;
-const INACTIVITY_TIMEOUT = 30 * 60 * 1000; // 30 minutes
+// ==================== INITIALIZE SESSION KEEP-ALIVE ON PAGE LOAD ====================
+// Check if user is logged in and initialize session keep-alive
+const loggedInUserId = localStorage.getItem('loggedInUserId');
+const currentPath = window.location.pathname;
+const isAuthPage = currentPath.includes('index.html') || currentPath.includes('signup.html') || currentPath === '/' || currentPath.endsWith('/');
 
-function resetInactivityTimer() {
-    if (inactivityTimer) {
-        clearTimeout(inactivityTimer);
-    }
-    
-    if (loggedInUserId && !isAuthPage) {
-        inactivityTimer = setTimeout(() => {
-            signOut(auth);
-            localStorage.removeItem('loggedInUserId');
-            showMessage('Logged out due to inactivity', true);
-            setTimeout(() => {
-                window.location.href = 'index.html';
-            }, 2000);
-        }, INACTIVITY_TIMEOUT);
-    }
+if (loggedInUserId && !isAuthPage) {
+    initSessionKeepAlive();
 }
 
-// Add event listeners for user activity
-if (!isAuthPage) {
-    ['mousemove', 'keydown', 'click', 'scroll'].forEach(event => {
-        window.addEventListener(event, resetInactivityTimer);
-    });
-    resetInactivityTimer();
-}
+// ==================== CLEANUP ON PAGE UNLOAD ====================
+window.addEventListener('beforeunload', () => {
+    stopSessionKeepAlive();
+});
