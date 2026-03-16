@@ -985,53 +985,91 @@ function addPDFProductBreakdown(doc, margin, pageWidth, yPos, productSalesData, 
         doc.setFontSize(type === 'all' ? 16 : 14);
         doc.setFont('helvetica', 'bold');
         doc.setTextColor(color[0], color[1], color[2]);
-        doc.text(title, margin, yPos);
+        // Clean the title - remove any special characters
+        const cleanTitle = title.replace(/[&<>"]/g, '').trim();
+        doc.text(cleanTitle, margin, yPos);
         yPos += 7;
         
-        const totalOriginal = data.reduce((sum, p) => sum + p.originalRevenue, 0);
-        const totalDiscount = data.reduce((sum, p) => sum + p.discountAmount, 0);
-        const totalFinal = data.reduce((sum, p) => sum + p.revenue, 0);
+        // Calculate totals with safe values
+        const totalOriginal = data.reduce((sum, p) => sum + (parseFloat(p.originalRevenue) || 0), 0);
+        const totalDiscount = data.reduce((sum, p) => sum + (parseFloat(p.discountAmount) || 0), 0);
+        const totalFinal = data.reduce((sum, p) => sum + (parseFloat(p.revenue) || 0), 0);
         
+        // Summary text - create a clean string without any special characters
         doc.setFontSize(10);
-        doc.setTextColor(127, 140, 141);
-        doc.text(`Summary: Original: ₱${totalOriginal.toFixed(2)} | Discount: ₱${totalDiscount.toFixed(2)} | Total: ₱${totalFinal.toFixed(2)}`, margin, yPos);
+        doc.setFont('helvetica', 'normal');
+        doc.setTextColor(0, 0, 0);
+        
+        // Format the summary text properly
+        const summaryText = `Summary: Original: ₱${totalOriginal.toFixed(2)} | Discount: ₱${totalDiscount.toFixed(2)} | Total: ₱${totalFinal.toFixed(2)}`;
+        
+        // Draw the text with proper encoding
+        doc.text(summaryText, margin, yPos);
         yPos += 7;
         
-        const columns = type === 'all' 
-            ? ["Brand", "Generic", "Qty", "Original", "Discount", "Total", "%"]
-            : ["Brand", "Generic", "Qty", "Original", "Discount", "Total"];
+        // Define columns
+        const columns = ["Brand", "Generic", "Qty", "Original", "Discount", "Total"];
         
-        const rows = data.slice(0, type === 'all' ? 15 : 10).map(product => {
-            const genericDisplay = product.generic || '—';
-            const row = [
-                truncate(product.brand, 15),
-                truncate(genericDisplay, 12),
-                product.quantity.toString(),
-                product.originalRevenue.toFixed(2),
-                product.discountAmount.toFixed(2),
-                product.revenue.toFixed(2)
+        // Prepare rows with cleaned text
+        const rows = data.slice(0, 10).map(product => {
+            // Clean text fields to remove any special characters
+            const brand = (product.brand || '').replace(/[&<>"]/g, '').trim();
+            const generic = (product.generic || '—').replace(/[&<>"]/g, '').trim();
+            
+            return [
+                truncate(brand || 'Unknown', 15),
+                truncate(generic, 12),
+                (parseInt(product.quantity) || 0).toString(),
+                `₱${(parseFloat(product.originalRevenue) || 0).toFixed(2)}`,
+                `₱${(parseFloat(product.discountAmount) || 0).toFixed(2)}`,
+                `₱${(parseFloat(product.revenue) || 0).toFixed(2)}`
             ];
-            if (type === 'all') {
-                const percentage = totalFinal > 0 ? ((product.revenue / totalFinal) * 100).toFixed(1) : 0;
-                row.push(percentage + '%');
-            }
-            return row;
         });
+        
+        // Add a note if there are more items
+        if (data.length > 10) {
+            doc.setFontSize(8);
+            doc.setTextColor(100, 100, 100);
+            doc.text(`* Showing top 10 of ${data.length} products`, margin, yPos - 2);
+        }
         
         doc.autoTable({
             head: [columns],
             body: rows,
             startY: yPos,
             theme: 'striped',
-            headStyles: { fillColor: color },
-            margin: { left: margin, right: margin }
+            headStyles: { 
+                fillColor: color,
+                textColor: [255, 255, 255],
+                fontStyle: 'bold'
+            },
+            columnStyles: {
+                0: { cellWidth: 35 }, // Brand
+                1: { cellWidth: 30 }, // Generic
+                2: { cellWidth: 15, halign: 'center' }, // Qty
+                3: { cellWidth: 25, halign: 'right' }, // Original
+                4: { cellWidth: 25, halign: 'right', textColor: [220, 53, 69] }, // Discount in red
+                5: { cellWidth: 25, halign: 'right', textColor: [40, 167, 69] }, // Total in green
+            },
+            margin: { left: margin, right: margin },
+            styles: {
+                fontSize: 9,
+                cellPadding: 2,
+                overflow: 'linebreak',
+                font: 'helvetica',
+            },
+            didParseCell: function(data) {
+                // Clean any cell text that might have special characters
+                if (data.cell.raw) {
+                    data.cell.text = data.cell.raw.replace(/[&<>"]/g, '').trim();
+                }
+            }
         });
         
         yPos = doc.lastAutoTable.finalY + 15;
     }
     return yPos;
 }
-
 function truncate(str, maxLen) {
     return str.length > maxLen ? str.substring(0, maxLen - 3) + '...' : str;
 }
