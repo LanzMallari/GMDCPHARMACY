@@ -26,6 +26,7 @@ document.addEventListener('DOMContentLoaded', () => {
     initializeInventory();
     setupEventListeners();
     initializeNotifications();
+    setupCategoryListener(); // New function to listen for category changes
 });
 
 async function initializeInventory() {
@@ -207,7 +208,7 @@ function createNotificationElements() {
         notificationContainer.style.position = 'relative';
         notificationContainer.appendChild(popup);
         
-        // Add animation keyframes (same as in pos.js)
+        // Add animation keyframes
         const style = document.createElement('style');
         style.textContent = `
             @keyframes slideDown {
@@ -374,19 +375,33 @@ async function checkNotifications(forceRefresh = false) {
         const expiringProducts = [];
         const lowStockProducts = [];
         
-        // Helper function for low stock threshold
-        function getLowStockThreshold(category) {
+        // Helper function for low stock threshold - Updated for syrup
+        function getLowStockThreshold(category, subcategory) {
             const categoryLower = (category || '').toLowerCase();
-            if (categoryLower === 'rx' || categoryLower === 'rx medicine') return 50;
-            if (categoryLower === 'over the counter' || categoryLower === 'otc') return 30;
+            const subcategoryLower = (subcategory || '').toLowerCase();
+            
+            if (categoryLower === 'rx' || categoryLower === 'rx medicine') {
+                if (subcategoryLower === 'syrup') {
+                    return 5; // Syrup threshold
+                } else {
+                    return 50; // Regular RX threshold
+                }
+            }
+            if (categoryLower === 'over the counter' || categoryLower === 'otc') {
+                if (subcategoryLower === 'syrup') {
+                    return 5; // Syrup threshold
+                } else {
+                    return 30; // Regular OTC threshold
+                }
+            }
             if (categoryLower === 'food' || categoryLower === 'foods') return 5;
             if (categoryLower === 'general merchandise' || categoryLower === 'merchandise') return 2;
             return 10;
         }
         
-        function isLowStock(stock, category) {
+        function isLowStock(stock, category, subcategory) {
             if (stock === 0) return false;
-            const threshold = getLowStockThreshold(category);
+            const threshold = getLowStockThreshold(category, subcategory);
             return stock < threshold;
         }
         
@@ -434,18 +449,19 @@ async function checkNotifications(forceRefresh = false) {
             }
         });
         
-        // Check for low stock
+        // Check for low stock with subcategory
         productsSnapshot.forEach(doc => {
             const product = doc.data();
             const productId = doc.id;
             const actualStock = availableStockMap.get(productId) || 0;
             
-            if (actualStock > 0 && isLowStock(actualStock, product.category)) {
+            if (actualStock > 0 && isLowStock(actualStock, product.category, product.subcategory)) {
                 lowStockCount++;
                 const productName = product.brand || product.name || 'Unknown';
-                const threshold = getLowStockThreshold(product.category);
+                const threshold = getLowStockThreshold(product.category, product.subcategory);
+                const subcategoryText = product.subcategory ? ` (${product.subcategory})` : '';
                 lowStockProducts.push({
-                    name: productName,
+                    name: productName + subcategoryText,
                     stock: actualStock,
                     threshold: threshold
                 });
@@ -630,7 +646,7 @@ async function loadNotificationDetails() {
             html += `</div>`;
         }
         
-        // Low stock items
+        // Low stock items with subcategory info
         if (data.lowStockProducts.length > 0) {
             html += `
                 <div style="margin-bottom: 20px;">
@@ -677,27 +693,38 @@ async function loadNotificationDetails() {
     popupBody.innerHTML = html;
 }
 
-// Helper function to determine low stock threshold based on category
-function getLowStockThreshold(category) {
+// Helper function to determine low stock threshold based on category and subcategory
+function getLowStockThreshold(category, subcategory) {
     const categoryLower = (category || '').toLowerCase();
+    const subcategoryLower = (subcategory || '').toLowerCase();
     
     if (categoryLower === 'rx' || categoryLower === 'rx medicine') {
-        return 50; // RX Medicines - less than 50 is low stock
-    } else if (categoryLower === 'over the counter' || categoryLower === 'otc' || categoryLower === 'over-the-counter') {
-        return 30; // Over the Counter - less than 30 is low stock
-    } else if (categoryLower === 'food' || categoryLower === 'foods' || categoryLower === 'food items') {
-        return 5; // Food items - less than 5 is low stock
-    } else if (categoryLower === 'general merchandise' || categoryLower === 'merchandise' || categoryLower === 'general') {
-        return 2; // General Merchandise - less than 2 is low stock
-    } else {
-        return 10; // Default threshold for other categories
+        if (subcategoryLower === 'syrup') {
+            return 5; // Syrup threshold
+        } else {
+            return 50; // Regular RX threshold (capsules, tablets, etc.)
+        }
     }
+    if (categoryLower === 'over the counter' || categoryLower === 'otc' || categoryLower === 'over-the-counter') {
+        if (subcategoryLower === 'syrup') {
+            return 5; // Syrup threshold
+        } else {
+            return 30; // Regular OTC threshold (capsules, tablets, etc.)
+        }
+    }
+    if (categoryLower === 'food' || categoryLower === 'foods' || categoryLower === 'food items') {
+        return 5;
+    }
+    if (categoryLower === 'general merchandise' || categoryLower === 'merchandise' || categoryLower === 'general') {
+        return 2;
+    }
+    return 10; // Default threshold
 }
 
 // Helper function to determine if stock is low
-function isLowStock(stock, category) {
-    if (stock === 0) return false; // Out of stock is handled separately
-    const threshold = getLowStockThreshold(category);
+function isLowStock(stock, category, subcategory) {
+    if (stock === 0) return false;
+    const threshold = getLowStockThreshold(category, subcategory);
     return stock < threshold;
 }
 
@@ -727,6 +754,29 @@ async function getProductsWithCache(forceRefresh = false) {
     return snapshot;
 }
 
+// ==================== CATEGORY LISTENER ====================
+function setupCategoryListener() {
+    const categorySelect = document.getElementById('productCategory');
+    const subcategoryContainer = document.getElementById('subcategoryContainer');
+    
+    if (categorySelect && subcategoryContainer) {
+        categorySelect.addEventListener('change', function() {
+            const selectedCategory = this.value;
+            
+            if (selectedCategory === 'rx' || selectedCategory === 'over the counter') {
+                subcategoryContainer.style.display = 'block';
+            } else {
+                subcategoryContainer.style.display = 'none';
+                // Clear subcategory selection
+                const subcategorySelect = document.getElementById('productSubcategory');
+                if (subcategorySelect) {
+                    subcategorySelect.value = '';
+                }
+            }
+        });
+    }
+}
+
 // ==================== INVENTORY FUNCTIONS ====================
 async function loadInventory(forceRefresh = false) {
     try {
@@ -736,7 +786,7 @@ async function loadInventory(forceRefresh = false) {
         const tableBody = document.getElementById('inventoryTableBody');
         if (!tableBody) return;
         
-        tableBody.innerHTML = '<tr><td colspan="8" class="loading">Loading inventory...</td></tr>';
+        tableBody.innerHTML = '<tr><td colspan="9" class="loading">Loading inventory...</td></tr>';
         
         // Use Promise.all for parallel fetching
         const [productsSnapshot, stockItemsSnapshot] = await Promise.all([
@@ -803,15 +853,15 @@ async function loadInventory(forceRefresh = false) {
             const availableStock = stockMap.get(product.id) || 0;
             const expiringInfo = expiryMap.get(product.id) || { count: 0, items: [] };
             
-            // Determine stock status class based on category-specific threshold
-            const isLow = isLowStock(availableStock, product.category);
+            // Determine stock status class based on category and subcategory-specific threshold
+            const isLow = isLowStock(availableStock, product.category, product.subcategory);
             const stockClass = availableStock === 0 ? 'out-of-stock' : (isLow ? 'low-stock' : '');
             const stockStatus = availableStock === 0 ? 'Out of Stock' : availableStock;
             
             // Add tooltip for low stock to show threshold
             let stockTooltip = '';
             if (isLow) {
-                const threshold = getLowStockThreshold(product.category);
+                const threshold = getLowStockThreshold(product.category, product.subcategory);
                 stockTooltip = ` title="Low stock threshold: less than ${threshold} units (Current: ${availableStock})"`;
             }
             
@@ -840,12 +890,16 @@ async function loadInventory(forceRefresh = false) {
             else if (displayCategory === 'food') displayCategory = 'Food';
             else if (displayCategory === 'general merchandise') displayCategory = 'General Merchandise';
             
+            // Add subcategory display
+            const subcategoryDisplay = product.subcategory ? 
+                `<span class="subcategory-badge">${product.subcategory}</span>` : '';
+            
             const row = document.createElement('tr');
             row.innerHTML = `
                 <td>${product.code || 'N/A'}</td>
                 <td>${brandName}</td>
                 <td>${genericName}</td>
-                <td>${displayCategory}</td>
+                <td>${displayCategory} ${subcategoryDisplay}</td>
                 <td>₱${(product.price || 0).toFixed(2)}</td>
                 <td class="${stockClass}"${stockTooltip}>${stockStatus}</td>
                 <td>${expiryDisplay}</td>
@@ -890,7 +944,7 @@ async function loadInventory(forceRefresh = false) {
     } catch (error) {
         console.error("Error loading inventory:", error);
         showNotification('Error loading inventory', 'error');
-        document.getElementById('inventoryTableBody').innerHTML = '<tr><td colspan="8" class="error">Error loading inventory</td></tr>';
+        document.getElementById('inventoryTableBody').innerHTML = '<tr><td colspan="9" class="error">Error loading inventory</td></tr>';
     }
 }
 
@@ -902,7 +956,7 @@ async function loadInventoryFromStockItems(stockItemsSnapshot) {
         const tableBody = document.getElementById('inventoryTableBody');
         
         if (stockItemsSnapshot.empty) {
-            tableBody.innerHTML = '<tr><td colspan="8" class="no-data">No stock items found</td></tr>';
+            tableBody.innerHTML = '<tr><td colspan="9" class="no-data">No stock items found</td></tr>';
             return;
         }
         
@@ -928,6 +982,7 @@ async function loadInventoryFromStockItems(stockItemsSnapshot) {
                     brand: item.productName || 'Unknown Product',
                     generic: item.productGeneric || 'Unknown Generic',
                     category: item.productCategory || 'Uncategorized',
+                    subcategory: item.productSubcategory || '',
                     price: item.productPrice || 0,
                     stockItems: [],
                     availableCount: 0,
@@ -961,15 +1016,15 @@ async function loadInventoryFromStockItems(stockItemsSnapshot) {
             // Get a sample item for additional data
             const sampleItem = group.stockItems[0] || {};
             
-            // Determine stock status class based on category-specific threshold
-            const isLow = isLowStock(group.availableCount, group.category);
+            // Determine stock status class based on category and subcategory-specific threshold
+            const isLow = isLowStock(group.availableCount, group.category, group.subcategory);
             const stockClass = group.availableCount === 0 ? 'out-of-stock' : (isLow ? 'low-stock' : '');
             const stockStatus = group.availableCount === 0 ? 'Out of Stock' : group.availableCount;
             
             // Add tooltip for low stock to show threshold
             let stockTooltip = '';
             if (isLow) {
-                const threshold = getLowStockThreshold(group.category);
+                const threshold = getLowStockThreshold(group.category, group.subcategory);
                 stockTooltip = ` title="Low stock threshold: less than ${threshold} units (Current: ${group.availableCount})"`;
             }
             
@@ -1000,12 +1055,16 @@ async function loadInventoryFromStockItems(stockItemsSnapshot) {
             else if (displayCategory.toLowerCase() === 'food') displayCategory = 'Food';
             else if (displayCategory.toLowerCase() === 'general merchandise') displayCategory = 'General Merchandise';
             
+            // Add subcategory display
+            const subcategoryDisplay = group.subcategory ? 
+                `<span class="subcategory-badge">${group.subcategory}</span>` : '';
+            
             const row = document.createElement('tr');
             row.innerHTML = `
                 <td>${productCode}</td>
                 <td>${group.brand}</td>
                 <td>${group.generic}</td>
-                <td>${displayCategory}</td>
+                <td>${displayCategory} ${subcategoryDisplay}</td>
                 <td>₱${(price).toFixed(2)}</td>
                 <td class="${stockClass}"${stockTooltip}>${stockStatus}</td>
                 <td>${expiryDisplay}</td>
@@ -1247,12 +1306,16 @@ async function createProductFromStockGroup(productKey, brand, generic, price) {
         // Count available items
         const availableCount = groupItems.filter(item => item.status === 'available').length;
         
+        // Get sample item for category and subcategory
+        const sampleItem = groupItems[0] || {};
+        
         // Create the product
         const productData = {
             code: `PROD-${Date.now()}`,
             brand: brand,
             generic: generic,
-            category: 'Uncategorized',
+            category: sampleItem.productCategory || 'Uncategorized',
+            subcategory: sampleItem.productSubcategory || '',
             price: parseFloat(price) || 0,
             stock: availableCount,
             discountable: true,
@@ -1270,7 +1333,9 @@ async function createProductFromStockGroup(productKey, brand, generic, price) {
             batch.update(stockItemRef, {
                 productId: productRef.id,
                 productName: productData.brand,
-                productGeneric: productData.generic
+                productGeneric: productData.generic,
+                productCategory: productData.category,
+                productSubcategory: productData.subcategory
             });
         });
         
@@ -1820,13 +1885,39 @@ async function editProduct(productId) {
         else if (categoryValue === 'general merchandise') categoryValue = 'general merchandise';
         
         document.getElementById('productCategory').value = categoryValue;
+        
+        // Show/hide subcategory based on category
+        const subcategoryContainer = document.getElementById('subcategoryContainer');
+        const subcategorySelect = document.getElementById('productSubcategory');
+        
+        if (categoryValue === 'rx' || categoryValue === 'over the counter') {
+            subcategoryContainer.style.display = 'block';
+            if (product.subcategory) {
+                subcategorySelect.value = product.subcategory;
+            } else {
+                subcategorySelect.value = '';
+            }
+        } else {
+            subcategoryContainer.style.display = 'none';
+            subcategorySelect.value = '';
+        }
+        
         document.getElementById('productPrice').value = product.price || 0;
         document.getElementById('productStock').value = product.stock || 0;
         
         const discountableYes = document.getElementById('discountableYes');
         const discountableNo = document.getElementById('discountableNo');
+        const prescriptionDiscountable = document.getElementById('prescriptionDiscountable');
         
-        if (discountableYes && discountableNo) {
+        if (prescriptionDiscountable) {
+            if (product.discountable === 'prescription') {
+                prescriptionDiscountable.checked = true;
+            } else if (product.discountable === false) {
+                discountableNo.checked = true;
+            } else {
+                discountableYes.checked = true;
+            }
+        } else {
             if (product.discountable === false) {
                 discountableNo.checked = true;
             } else {
@@ -1900,8 +1991,19 @@ if (productForm) {
         const editId = productForm.dataset.editId;
         
         try {
+            // Get discount eligibility
+            let discountable = true;
             const discountableYes = document.getElementById('discountableYes');
-            const discountable = discountableYes && discountableYes.checked ? true : false;
+            const discountableNo = document.getElementById('discountableNo');
+            const prescriptionDiscountable = document.getElementById('prescriptionDiscountable');
+            
+            if (prescriptionDiscountable && prescriptionDiscountable.checked) {
+                discountable = 'prescription';
+            } else if (discountableNo && discountableNo.checked) {
+                discountable = false;
+            } else {
+                discountable = true;
+            }
             
             const stockQuantity = parseInt(document.getElementById('productStock')?.value) || 0;
             const expiryDateInput = document.getElementById('productExpiry')?.value;
@@ -1915,11 +2017,18 @@ if (productForm) {
             else if (category === 'food') category = 'food';
             else if (category === 'general merchandise') category = 'general merchandise';
             
+            // Get subcategory if applicable
+            let subcategory = '';
+            if (category === 'rx' || category === 'over the counter') {
+                subcategory = document.getElementById('productSubcategory')?.value || '';
+            }
+            
             const productData = {
                 code: document.getElementById('productCode')?.value || '',
                 brand: document.getElementById('productBrand')?.value || '',
                 generic: document.getElementById('productGeneric')?.value || '',
                 category: category,
+                subcategory: subcategory,
                 price: parseFloat(document.getElementById('productPrice')?.value) || 0,
                 stock: stockQuantity,
                 discountable: discountable,
@@ -1941,6 +2050,26 @@ if (productForm) {
                 productData.stock = stockItemsSnapshot.size;
                 
                 await updateDoc(productRef, productData);
+                
+                // Update stock items with new product data
+                const allStockItemsQuery = query(
+                    collection(db, "stock_items"),
+                    where("productId", "==", editId)
+                );
+                const allStockItemsSnapshot = await getDocs(allStockItemsQuery);
+                
+                if (!allStockItemsSnapshot.empty) {
+                    const batch = writeBatch(db);
+                    allStockItemsSnapshot.forEach(doc => {
+                        batch.update(doc.ref, {
+                            productName: productData.brand,
+                            productGeneric: productData.generic,
+                            productCategory: productData.category,
+                            productSubcategory: productData.subcategory
+                        });
+                    });
+                    await batch.commit();
+                }
                 
                 await addDoc(collection(db, "activities"), {
                     type: 'product',
@@ -1969,6 +2098,7 @@ if (productForm) {
                             productName: productData.brand,
                             productGeneric: productData.generic,
                             productCategory: productData.category,
+                            productSubcategory: productData.subcategory,
                             batchNumber: `BATCH-${new Date().toISOString().slice(0,10)}`,
                             serialNumber: serialNumber,
                             status: 'available',
@@ -2009,6 +2139,9 @@ if (productForm) {
             productForm.dataset.editId = '';
             document.getElementById('discountableYes').checked = true;
             
+            // Hide subcategory container
+            document.getElementById('subcategoryContainer').style.display = 'none';
+            
             // Clear cache and reload
             productsCache = null;
             stockItemsCache = null;
@@ -2043,6 +2176,7 @@ document.addEventListener('DOMContentLoaded', () => {
             document.getElementById('discountableYes').checked = true;
             document.getElementById('productExpiry').disabled = false;
             document.getElementById('productExpiry').value = '';
+            document.getElementById('subcategoryContainer').style.display = 'none';
             
             document.querySelector('#productModal .modal-header h2').textContent = 'Add New Product';
             document.querySelector('#productForm button[type="submit"]').textContent = 'Add Product';
@@ -2101,6 +2235,10 @@ document.addEventListener('DOMContentLoaded', () => {
                     else if (displayCategory === 'food') displayCategory = 'Food';
                     else if (displayCategory === 'general merchandise') displayCategory = 'General Merchandise';
                     
+                    // Add subcategory if exists
+                    const subcategoryDisplay = product.subcategory ? 
+                        ` - ${product.subcategory}` : '';
+                    
                     const resultDiv = document.createElement('div');
                     resultDiv.className = 'product-result-item';
                     resultDiv.dataset.productId = product.id;
@@ -2109,7 +2247,7 @@ document.addEventListener('DOMContentLoaded', () => {
                         <div class="product-result-details">
                             <span class="product-result-code">Code: ${product.code || 'N/A'}</span>
                             <span>Generic: ${product.generic || 'N/A'}</span>
-                            <span>Category: ${displayCategory}</span>
+                            <span>Category: ${displayCategory}${subcategoryDisplay}</span>
                             <span>Stock: ${product.stock || 0}</span>
                             <span>Price: ₱${(product.price || 0).toFixed(2)}</span>
                         </div>
@@ -2157,6 +2295,7 @@ document.addEventListener('DOMContentLoaded', () => {
                         productName: selectedProduct.brand,
                         productGeneric: selectedProduct.generic,
                         productCategory: selectedProduct.category,
+                        productSubcategory: selectedProduct.subcategory || '',
                         batchNumber: `BATCH-${new Date().toISOString().slice(0,10)}`,
                         serialNumber: serialNumber,
                         status: 'available',

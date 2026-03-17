@@ -16,23 +16,31 @@ let isProcessingPayment = false;
 let unsubscribeProducts = null;
 let sellExpiringFirst = true;
 
-// Cache for stock items to reduce Firestore reads
-let stockItemsCache = null;
-let lastStockFetch = 0;
-const STOCK_CACHE_DURATION = 30000; // 30 seconds
+// Enhanced caching system
+let productsCache = {
+    data: null,
+    timestamp: 0,
+    expiryMap: null
+};
+let stockItemsCache = {
+    data: null,
+    timestamp: 0
+};
+const CACHE_DURATION = 60000; // 60 seconds cache
+const STOCK_CACHE_DURATION = 60000; // 60 seconds
 
 // Notification state
 let notificationBadge = null;
 let notificationPopup = null;
 let notificationInterval = null;
 let lastPopupDismissed = 0;
-const NOTIFICATION_CHECK_INTERVAL = 60 * 60 * 1000; // 1 hour in milliseconds
-const POPUP_DISMISS_DURATION = 60 * 60 * 1000; // 1 hour before showing popup again
+const NOTIFICATION_CHECK_INTERVAL = 60 * 60 * 1000; // 1 hour
+const POPUP_DISMISS_DURATION = 60 * 60 * 1000; // 1 hour
 
 // Discount rates
 const DISCOUNT_RATES = {
     seniorPWD: 20,
-    yakap: 30 // Updated to 30%
+    yakap: 30
 };
 
 // Initialize
@@ -43,8 +51,10 @@ document.addEventListener('DOMContentLoaded', () => {
 });
 
 async function initializePOS() {
-    await loadUserData();
-    updateDateTime();
+    await Promise.all([
+        loadUserData(),
+        updateDateTime()
+    ]);
     await loadProducts();
     setupSidebar();
     setupSellExpiringToggle();
@@ -119,11 +129,12 @@ function removeOverlay() {
     if (overlay) overlay.remove();
 }
 
-// ==================== NOTIFICATION SYSTEM ====================
+// ==================== OPTIMIZED NOTIFICATION SYSTEM ====================
 
 function initializeNotifications() {
     createNotificationElements();
-    checkNotifications();
+    // Don't block main thread, check in background
+    setTimeout(() => checkNotifications(), 2000);
     
     if (notificationInterval) {
         clearInterval(notificationInterval);
@@ -135,7 +146,6 @@ function createNotificationElements() {
     const notificationContainer = document.querySelector('.notification');
     if (!notificationContainer) return;
     
-    // Redesign notification logo
     notificationContainer.innerHTML = `
         <div class="notification-wrapper" style="position: relative; cursor: pointer;">
             <div class="notification-icon" style="width: 45px; height: 45px; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); border-radius: 12px; display: flex; align-items: center; justify-content: center; transition: all 0.3s ease; box-shadow: 0 4px 15px rgba(102, 126, 234, 0.3);">
@@ -147,7 +157,6 @@ function createNotificationElements() {
     
     notificationBadge = notificationContainer.querySelector('.badge');
     
-    // Add hover effect
     const notificationIcon = notificationContainer.querySelector('.notification-icon');
     notificationIcon.addEventListener('mouseenter', () => {
         notificationIcon.style.transform = 'scale(1.05)';
@@ -159,7 +168,6 @@ function createNotificationElements() {
         notificationIcon.style.boxShadow = '0 4px 15px rgba(102, 126, 234, 0.3)';
     });
     
-    // Create notification popup
     if (!document.getElementById('notificationPopup')) {
         const popup = document.createElement('div');
         popup.id = 'notificationPopup';
@@ -223,100 +231,42 @@ function createNotificationElements() {
         notificationContainer.style.position = 'relative';
         notificationContainer.appendChild(popup);
         
-        // Add animation keyframes
         const style = document.createElement('style');
         style.textContent = `
-            @keyframes slideDown {
-                from {
-                    transform: translateY(-10px);
-                    opacity: 0;
-                }
-                to {
-                    transform: translateY(0);
-                    opacity: 1;
-                }
-            }
-            
-            .notification-item {
-                transition: all 0.2s ease;
-                border: 1px solid transparent;
-                margin-bottom: 8px;
-            }
-            
-            .notification-item:hover {
-                transform: translateX(-3px);
-                border-color: rgba(0,0,0,0.05);
-                box-shadow: 0 4px 12px rgba(0,0,0,0.05);
-            }
-            
-            .notification-refresh-btn:hover, .notification-close-btn:hover {
-                background: rgba(255,255,255,0.3) !important;
-                transform: rotate(90deg);
-            }
-            
-            .view-all-notifications:hover {
-                transform: translateY(-2px);
-                box-shadow: 0 4px 15px rgba(102, 126, 234, 0.4);
-            }
-            
-            #notificationPopupBody::-webkit-scrollbar {
-                width: 6px;
-            }
-            
-            #notificationPopupBody::-webkit-scrollbar-track {
-                background: #f1f1f1;
-                border-radius: 10px;
-            }
-            
-            #notificationPopupBody::-webkit-scrollbar-thumb {
-                background: #cbd5e0;
-                border-radius: 10px;
-            }
-            
-            #notificationPopupBody::-webkit-scrollbar-thumb:hover {
-                background: #a0aec0;
-            }
-            
-            @keyframes pulse {
-                0% {
-                    box-shadow: 0 0 0 2px #fff, 0 0 0 4px #e74c3c;
-                }
-                50% {
-                    box-shadow: 0 0 0 2px #fff, 0 0 0 8px #e74c3c;
-                }
-                100% {
-                    box-shadow: 0 0 0 2px #fff, 0 0 0 4px #e74c3c;
-                }
-            }
+            @keyframes slideDown { from { transform: translateY(-10px); opacity: 0; } to { transform: translateY(0); opacity: 1; } }
+            .notification-item { transition: all 0.2s ease; border: 1px solid transparent; margin-bottom: 8px; }
+            .notification-item:hover { transform: translateX(-3px); border-color: rgba(0,0,0,0.05); box-shadow: 0 4px 12px rgba(0,0,0,0.05); }
+            .notification-refresh-btn:hover, .notification-close-btn:hover { background: rgba(255,255,255,0.3) !important; transform: rotate(90deg); }
+            .view-all-notifications:hover { transform: translateY(-2px); box-shadow: 0 4px 15px rgba(102, 126, 234, 0.4); }
+            #notificationPopupBody::-webkit-scrollbar { width: 6px; }
+            #notificationPopupBody::-webkit-scrollbar-track { background: #f1f1f1; border-radius: 10px; }
+            #notificationPopupBody::-webkit-scrollbar-thumb { background: #cbd5e0; border-radius: 10px; }
+            #notificationPopupBody::-webkit-scrollbar-thumb:hover { background: #a0aec0; }
+            @keyframes pulse { 0% { box-shadow: 0 0 0 2px #fff, 0 0 0 4px #e74c3c; } 50% { box-shadow: 0 0 0 2px #fff, 0 0 0 8px #e74c3c; } 100% { box-shadow: 0 0 0 2px #fff, 0 0 0 4px #e74c3c; } }
         `;
         document.head.appendChild(style);
         
-        // Toggle popup on click
         notificationContainer.addEventListener('click', (e) => {
             e.stopPropagation();
             toggleNotificationPopup();
         });
         
-        // Close button
         popup.querySelector('.notification-close-btn').addEventListener('click', (e) => {
             e.stopPropagation();
             hideNotificationPopup();
             lastPopupDismissed = Date.now();
         });
         
-        // Refresh button
         popup.querySelector('.notification-refresh-btn').addEventListener('click', (e) => {
             e.stopPropagation();
             checkNotifications(true);
         });
         
-        // View all button
         popup.querySelector('.view-all-notifications').addEventListener('click', (e) => {
             e.stopPropagation();
             window.location.href = 'reports.html';
         });
         
-        // Close popup when clicking outside
         document.addEventListener('click', (e) => {
             if (!popup.contains(e.target) && !notificationContainer.contains(e.target)) {
                 hideNotificationPopup();
@@ -329,7 +279,6 @@ function createNotificationElements() {
 
 function toggleNotificationPopup() {
     if (!notificationPopup) return;
-    
     if (notificationPopup.style.display === 'none' || notificationPopup.style.display === '') {
         notificationPopup.style.display = 'block';
         loadNotificationDetails();
@@ -339,18 +288,13 @@ function toggleNotificationPopup() {
 }
 
 function hideNotificationPopup() {
-    if (notificationPopup) {
-        notificationPopup.style.display = 'none';
-    }
+    if (notificationPopup) notificationPopup.style.display = 'none';
 }
 
 function showNotificationPopup() {
     if (!notificationPopup) return;
-    
     const now = Date.now();
-    if (now - lastPopupDismissed < POPUP_DISMISS_DURATION) {
-        return;
-    }
+    if (now - lastPopupDismissed < POPUP_DISMISS_DURATION) return;
     
     notificationPopup.style.display = 'block';
     loadNotificationDetails();
@@ -362,6 +306,30 @@ function showNotificationPopup() {
     }, 10000);
 }
 
+// Optimized low stock threshold with subcategory
+function getLowStockThreshold(category, subcategory) {
+    const categoryLower = (category || '').toLowerCase();
+    const subcategoryLower = (subcategory || '').toLowerCase();
+    
+    if (categoryLower === 'rx' || categoryLower === 'rx medicine') {
+        if (subcategoryLower === 'syrup') return 5;
+        return 50;
+    }
+    if (categoryLower === 'over the counter' || categoryLower === 'otc') {
+        if (subcategoryLower === 'syrup') return 5;
+        return 30;
+    }
+    if (categoryLower === 'food' || categoryLower === 'foods') return 5;
+    if (categoryLower === 'general merchandise' || categoryLower === 'merchandise') return 2;
+    return 10;
+}
+
+function isLowStock(stock, category, subcategory) {
+    if (stock === 0) return false;
+    const threshold = getLowStockThreshold(category, subcategory);
+    return stock < threshold;
+}
+
 async function checkNotifications(forceRefresh = false) {
     try {
         const [productsSnapshot, stockItemsSnapshot] = await Promise.all([
@@ -370,100 +338,80 @@ async function checkNotifications(forceRefresh = false) {
         ]);
         
         const productsMap = new Map();
-        productsSnapshot.forEach(doc => {
-            productsMap.set(doc.id, doc.data());
-        });
+        productsSnapshot.forEach(doc => productsMap.set(doc.id, doc.data()));
         
         const today = new Date();
         today.setHours(0, 0, 0, 0);
+        const threeDaysFromNow = new Date(today); threeDaysFromNow.setDate(threeDaysFromNow.getDate() + 3);
+        const sevenDaysFromNow = new Date(today); sevenDaysFromNow.setDate(sevenDaysFromNow.getDate() + 7);
         
-        const threeDaysFromNow = new Date(today);
-        threeDaysFromNow.setDate(threeDaysFromNow.getDate() + 3);
+        let expiringUrgent = 0, expiringWarning = 0, lowStockCount = 0;
+        const expiringProducts = [], lowStockProducts = [];
         
-        const sevenDaysFromNow = new Date(today);
-        sevenDaysFromNow.setDate(sevenDaysFromNow.getDate() + 7);
-        
-        let expiringUrgent = 0;
-        let expiringWarning = 0;
-        let lowStockCount = 0;
-        
-        const expiringProducts = [];
-        const lowStockProducts = [];
-        
-        // Helper function for low stock threshold
-        function getLowStockThreshold(category) {
-            const categoryLower = (category || '').toLowerCase();
-            if (categoryLower === 'rx' || categoryLower === 'rx medicine') return 50;
-            if (categoryLower === 'over the counter' || categoryLower === 'otc') return 30;
-            if (categoryLower === 'food' || categoryLower === 'foods') return 5;
-            if (categoryLower === 'general merchandise' || categoryLower === 'merchandise') return 2;
-            return 10;
-        }
-        
-        function isLowStock(stock, category) {
-            if (stock === 0) return false;
-            const threshold = getLowStockThreshold(category);
-            return stock < threshold;
-        }
-        
-        // Process stock items for expiry
-        stockItemsSnapshot.forEach(doc => {
-            const item = doc.data();
-            if (item.expiryDate && item.status === 'available') {
-                const expiryDate = item.expiryDate.toDate();
-                expiryDate.setHours(0, 0, 0, 0);
-                
-                let productName = item.productName || 'Unknown';
-                if (item.productId && productsMap.has(item.productId)) {
-                    const product = productsMap.get(item.productId);
-                    productName = product.brand || product.name || productName;
-                }
-                
-                if (expiryDate <= threeDaysFromNow) {
-                    expiringUrgent++;
-                    expiringProducts.push({
-                        name: productName,
-                        serial: item.serialNumber,
-                        expiryDate: expiryDate,
-                        type: 'urgent',
-                        daysLeft: Math.ceil((expiryDate - today) / (1000 * 60 * 60 * 24))
-                    });
-                } else if (expiryDate <= sevenDaysFromNow) {
-                    expiringWarning++;
-                    expiringProducts.push({
-                        name: productName,
-                        serial: item.serialNumber,
-                        expiryDate: expiryDate,
-                        type: 'warning',
-                        daysLeft: Math.ceil((expiryDate - today) / (1000 * 60 * 60 * 24))
-                    });
-                }
-            }
-        });
-        
-        // Create available stock map for low stock check
+        // Create available stock map
         const availableStockMap = new Map();
+        
+        // Single pass through stock items
         stockItemsSnapshot.forEach(doc => {
             const item = doc.data();
             if (item.status === 'available' && item.productId) {
                 availableStockMap.set(item.productId, (availableStockMap.get(item.productId) || 0) + 1);
+                
+                if (item.expiryDate) {
+                    const expiryDate = item.expiryDate.toDate();
+                    expiryDate.setHours(0, 0, 0, 0);
+                    
+                    let productName = item.productName || 'Unknown';
+                    let productSubcategory = '';
+                    if (item.productId && productsMap.has(item.productId)) {
+                        const product = productsMap.get(item.productId);
+                        productName = product.brand || product.name || productName;
+                        productSubcategory = product.subcategory || '';
+                    }
+                    
+                    if (expiryDate <= threeDaysFromNow) {
+                        expiringUrgent++;
+                        expiringProducts.push({
+                            name: productName,
+                            serial: item.serialNumber,
+                            expiryDate,
+                            type: 'urgent',
+                            daysLeft: Math.ceil((expiryDate - today) / (1000 * 60 * 60 * 24)),
+                            subcategory: productSubcategory
+                        });
+                    } else if (expiryDate <= sevenDaysFromNow) {
+                        expiringWarning++;
+                        expiringProducts.push({
+                            name: productName,
+                            serial: item.serialNumber,
+                            expiryDate,
+                            type: 'warning',
+                            daysLeft: Math.ceil((expiryDate - today) / (1000 * 60 * 60 * 24)),
+                            subcategory: productSubcategory
+                        });
+                    }
+                }
             }
         });
         
-        // Check for low stock
+        // Check low stock
         productsSnapshot.forEach(doc => {
             const product = doc.data();
-            const productId = doc.id;
-            const actualStock = availableStockMap.get(productId) || 0;
+            const actualStock = availableStockMap.get(doc.id) || 0;
             
-            if (actualStock > 0 && isLowStock(actualStock, product.category)) {
+            if (actualStock > 0 && isLowStock(actualStock, product.category, product.subcategory)) {
                 lowStockCount++;
                 const productName = product.brand || product.name || 'Unknown';
-                const threshold = getLowStockThreshold(product.category);
+                const threshold = getLowStockThreshold(product.category, product.subcategory);
+                const subcategoryText = product.subcategory ? ` (${product.subcategory})` : '';
+                const syrupBadge = product.subcategory === 'syrup' ? ' SYRUP - ' : '';
+                
                 lowStockProducts.push({
-                    name: productName,
+                    name: syrupBadge + productName + subcategoryText,
                     stock: actualStock,
-                    threshold: threshold
+                    threshold,
+                    category: product.category,
+                    subcategory: product.subcategory
                 });
             }
         });
@@ -479,7 +427,6 @@ async function checkNotifications(forceRefresh = false) {
         
         const totalNotifications = expiringUrgent + expiringWarning + lowStockCount;
         
-        // Update notification badge
         if (notificationBadge) {
             notificationBadge.textContent = totalNotifications;
             notificationBadge.style.display = totalNotifications > 0 ? 'inline' : 'none';
@@ -494,24 +441,12 @@ async function checkNotifications(forceRefresh = false) {
             }
         }
         
-        // Store notification data
-        window.notificationData = {
-            expiringUrgent,
-            expiringWarning,
-            lowStockCount,
-            expiringProducts,
-            lowStockProducts,
-            lastCheck: new Date()
-        };
+        window.notificationData = { expiringUrgent, expiringWarning, lowStockCount, expiringProducts, lowStockProducts, lastCheck: new Date() };
         
         const lastCheckSpan = document.getElementById('lastNotificationCheck');
-        if (lastCheckSpan) {
-            lastCheckSpan.textContent = formatTimeAgo(new Date());
-        }
+        if (lastCheckSpan) lastCheckSpan.textContent = formatTimeAgo(new Date());
         
-        if (totalNotifications > 0) {
-            showNotificationPopup();
-        }
+        if (totalNotifications > 0) showNotificationPopup();
         
     } catch (error) {
         console.error("Error checking notifications:", error);
@@ -520,21 +455,17 @@ async function checkNotifications(forceRefresh = false) {
 
 function formatTimeAgo(date) {
     const now = new Date();
-    const diffMs = now - date;
-    const diffMins = Math.floor(diffMs / 60000);
-    const diffHours = Math.floor(diffMs / 3600000);
-    
+    const diffMins = Math.floor((now - date) / 60000);
     if (diffMins < 1) return 'Just now';
     if (diffMins < 60) return `${diffMins} minute${diffMins > 1 ? 's' : ''} ago`;
+    const diffHours = Math.floor(diffMins / 60);
     if (diffHours < 24) return `${diffHours} hour${diffHours > 1 ? 's' : ''} ago`;
     return date.toLocaleDateString();
 }
 
 function formatExpiryDate(date) {
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
+    const today = new Date(); today.setHours(0, 0, 0, 0);
     const diffDays = Math.ceil((date - today) / (1000 * 60 * 60 * 24));
-    
     if (diffDays === 0) return 'Today';
     if (diffDays === 1) return 'Tomorrow';
     if (diffDays < 0) return 'Expired';
@@ -545,147 +476,59 @@ async function loadNotificationDetails() {
     const popupBody = document.getElementById('notificationPopupBody');
     if (!popupBody) return;
     
-    if (!window.notificationData) {
-        await checkNotifications(true);
-    }
+    const data = window.notificationData || { expiringUrgent: 0, expiringWarning: 0, lowStockCount: 0, expiringProducts: [], lowStockProducts: [] };
     
-    const data = window.notificationData || {
-        expiringUrgent: 0,
-        expiringWarning: 0,
-        lowStockCount: 0,
-        expiringProducts: [],
-        lowStockProducts: []
-    };
+    if (data.expiringUrgent === 0 && data.expiringWarning === 0 && data.lowStockCount === 0) {
+        popupBody.innerHTML = `<div class="no-notifications" style="text-align: center; padding: 60px 20px;"><div style="width: 80px; height: 80px; background: linear-gradient(135deg, #e0f2fe 0%, #bae6fd 100%); border-radius: 50%; display: flex; align-items: center; justify-content: center; margin: 0 auto 20px;"><i class="fas fa-check-circle" style="font-size: 40px; color: #0284c7;"></i></div><h4 style="margin: 0 0 10px; color: #2c3e50; font-size: 18px;">All Clear!</h4><p style="margin: 0; color: #7f8c8d; font-size: 14px;">No notifications at this time.</p></div>`;
+        return;
+    }
     
     let html = '';
     
-    if (data.expiringUrgent === 0 && data.expiringWarning === 0 && data.lowStockCount === 0) {
-        html = `
-            <div class="no-notifications" style="text-align: center; padding: 60px 20px;">
-                <div style="width: 80px; height: 80px; background: linear-gradient(135deg, #e0f2fe 0%, #bae6fd 100%); border-radius: 50%; display: flex; align-items: center; justify-content: center; margin: 0 auto 20px;">
-                    <i class="fas fa-check-circle" style="font-size: 40px; color: #0284c7;"></i>
-                </div>
-                <h4 style="margin: 0 0 10px; color: #2c3e50; font-size: 18px;">All Clear!</h4>
-                <p style="margin: 0; color: #7f8c8d; font-size: 14px;">No notifications at this time.</p>
-            </div>
-        `;
-    } else {
-        // Urgent expiring items
-        if (data.expiringProducts.filter(p => p.type === 'urgent').length > 0) {
-            html += `
-                <div style="margin-bottom: 20px;">
-                    <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; padding: 0 5px;">
-                        <div style="display: flex; align-items: center; gap: 8px;">
-                            <div style="width: 8px; height: 8px; background: #e74c3c; border-radius: 50%;"></div>
-                            <h4 style="margin: 0; font-size: 14px; color: #e74c3c; font-weight: 600;">URGENT - Expiring Soon</h4>
-                        </div>
-                        <span style="background: #fdf3f2; color: #e74c3c; padding: 4px 10px; border-radius: 20px; font-size: 11px; font-weight: 600;">${data.expiringProducts.filter(p => p.type === 'urgent').length} items</span>
-                    </div>
-            `;
-            
-            data.expiringProducts
-                .filter(p => p.type === 'urgent')
-                .forEach(product => {
-                    const expiryText = formatExpiryDate(product.expiryDate);
-                    html += `
-                        <div class="notification-item urgent" style="background: #fdf3f2; border-left: 4px solid #e74c3c; border-radius: 10px; padding: 15px; margin-bottom: 8px; cursor: pointer;" onclick="window.location.href='inventory.html'">
-                            <div style="display: flex; align-items: flex-start; gap: 12px;">
-                                <div style="width: 36px; height: 36px; background: rgba(231, 76, 60, 0.1); border-radius: 8px; display: flex; align-items: center; justify-content: center;">
-                                    <i class="fas fa-exclamation-triangle" style="color: #e74c3c; font-size: 16px;"></i>
-                                </div>
-                                <div style="flex: 1;">
-                                    <div style="font-weight: 600; color: #2c3e50; margin-bottom: 4px;">${product.name}</div>
-                                    <div style="font-size: 12px; color: #7f8c8d; display: flex; gap: 15px; flex-wrap: wrap;">
-                                        <span><i class="fas fa-barcode"></i> ${product.serial || 'N/A'}</span>
-                                        <span><i class="far fa-clock"></i> Expires ${expiryText}</span>
-                                    </div>
-                                </div>
-                            </div>
-                        </div>
-                    `;
-                });
-            
+    // Urgent expiring
+    const urgentItems = data.expiringProducts.filter(p => p.type === 'urgent');
+    if (urgentItems.length > 0) {
+        html += `<div style="margin-bottom: 20px;"><div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; padding: 0 5px;"><div style="display: flex; align-items: center; gap: 8px;"><div style="width: 8px; height: 8px; background: #e74c3c; border-radius: 50%;"></div><h4 style="margin: 0; font-size: 14px; color: #e74c3c; font-weight: 600;">URGENT - Expiring Soon</h4></div><span style="background: #fdf3f2; color: #e74c3c; padding: 4px 10px; border-radius: 20px; font-size: 11px; font-weight: 600;">${urgentItems.length} items</span></div>`;
+        urgentItems.forEach(p => {
+            const expiryText = formatExpiryDate(p.expiryDate);
+            html += `<div class="notification-item urgent" style="background: #fdf3f2; border-left: 4px solid #e74c3c; border-radius: 10px; padding: 15px; margin-bottom: 8px; cursor: pointer;" onclick="window.location.href='inventory.html'"><div style="display: flex; align-items: flex-start; gap: 12px;"><div style="width: 36px; height: 36px; background: rgba(231, 76, 60, 0.1); border-radius: 8px; display: flex; align-items: center; justify-content: center;"><i class="fas fa-exclamation-triangle" style="color: #e74c3c; font-size: 16px;"></i></div><div style="flex: 1;"><div style="font-weight: 600; color: #2c3e50; margin-bottom: 4px;">${p.name}</div><div style="font-size: 12px; color: #7f8c8d; display: flex; gap: 15px; flex-wrap: wrap;"><span><i class="fas fa-barcode"></i> ${p.serial || 'N/A'}</span><span><i class="far fa-clock"></i> Expires ${expiryText}</span></div></div></div></div>`;
+        });
+        html += `</div>`;
+    }
+    
+    // Warning expiring
+    const warningItems = data.expiringProducts.filter(p => p.type === 'warning');
+    if (warningItems.length > 0) {
+        html += `<div style="margin-bottom: 20px;"><div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; padding: 0 5px;"><div style="display: flex; align-items: center; gap: 8px;"><div style="width: 8px; height: 8px; background: #f39c12; border-radius: 50%;"></div><h4 style="margin: 0; font-size: 14px; color: #f39c12; font-weight: 600;">Expiring Soon</h4></div><span style="background: #fef9e7; color: #f39c12; padding: 4px 10px; border-radius: 20px; font-size: 11px; font-weight: 600;">${warningItems.length} items</span></div>`;
+        warningItems.forEach(p => {
+            const expiryText = formatExpiryDate(p.expiryDate);
+            html += `<div class="notification-item warning" style="background: #fef9e7; border-left: 4px solid #f39c12; border-radius: 10px; padding: 15px; margin-bottom: 8px; cursor: pointer;" onclick="window.location.href='inventory.html'"><div style="display: flex; align-items: flex-start; gap: 12px;"><div style="width: 36px; height: 36px; background: rgba(243, 156, 18, 0.1); border-radius: 8px; display: flex; align-items: center; justify-content: center;"><i class="fas fa-clock" style="color: #f39c12; font-size: 16px;"></i></div><div style="flex: 1;"><div style="font-weight: 600; color: #2c3e50; margin-bottom: 4px;">${p.name}</div><div style="font-size: 12px; color: #7f8c8d; display: flex; gap: 15px; flex-wrap: wrap;"><span><i class="fas fa-barcode"></i> ${p.serial || 'N/A'}</span><span><i class="far fa-clock"></i> Expires ${expiryText}</span></div></div></div></div>`;
+        });
+        html += `</div>`;
+    }
+    
+    // Low stock with syrup priority
+    if (data.lowStockProducts.length > 0) {
+        const syrupItems = data.lowStockProducts.filter(p => p.name.includes('SYRUP'));
+        const otherItems = data.lowStockProducts.filter(p => !p.name.includes('SYRUP'));
+        
+        if (syrupItems.length > 0) {
+            html += `<div style="margin-bottom: 20px;"><div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; padding: 0 5px;"><div style="display: flex; align-items: center; gap: 8px;"><div style="width: 8px; height: 8px; background: #9b59b6; border-radius: 50%;"></div><h4 style="margin: 0; font-size: 14px; color: #9b59b6; font-weight: 600;"><i class="fas fa-flask"></i> SYRUP Low Stock Alert</h4></div><span style="background: #f3e5f5; color: #9b59b6; padding: 4px 10px; border-radius: 20px; font-size: 11px; font-weight: 600;">${syrupItems.length} items</span></div>`;
+            syrupItems.forEach(product => {
+                const percentRemaining = Math.round((product.stock / product.threshold) * 100);
+                const barColor = percentRemaining < 20 ? '#e74c3c' : (percentRemaining < 50 ? '#f39c12' : '#9b59b6');
+                html += `<div class="notification-item low-stock" style="background: #f3e5f5; border-left: 4px solid #9b59b6; border-radius: 10px; padding: 15px; margin-bottom: 8px; cursor: pointer;" onclick="window.location.href='inventory.html'"><div style="display: flex; align-items: flex-start; gap: 12px;"><div style="width: 36px; height: 36px; background: rgba(155, 89, 182, 0.1); border-radius: 8px; display: flex; align-items: center; justify-content: center;"><i class="fas fa-flask" style="color: #9b59b6; font-size: 16px;"></i></div><div style="flex: 1;"><div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;"><span style="font-weight: 600; color: #2c3e50;">${product.name.replace(' SYRUP - ', '')}</span><span style="background: ${barColor}; color: white; padding: 2px 8px; border-radius: 12px; font-size: 10px; font-weight: 600;">${percentRemaining}%</span></div><div style="font-size: 12px; color: #7f8c8d; margin-bottom: 8px;">Stock: ${product.stock} / ${product.threshold} units (Syrup threshold: 5)</div><div style="width: 100%; height: 6px; background: #e0e0e0; border-radius: 3px; overflow: hidden;"><div style="width: ${percentRemaining}%; height: 100%; background: ${barColor}; border-radius: 3px; transition: width 0.3s ease;"></div></div></div></div></div>`;
+            });
             html += `</div>`;
         }
         
-        // Warning expiring items
-        if (data.expiringProducts.filter(p => p.type === 'warning').length > 0) {
-            html += `
-                <div style="margin-bottom: 20px;">
-                    <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; padding: 0 5px;">
-                        <div style="display: flex; align-items: center; gap: 8px;">
-                            <div style="width: 8px; height: 8px; background: #f39c12; border-radius: 50%;"></div>
-                            <h4 style="margin: 0; font-size: 14px; color: #f39c12; font-weight: 600;">Expiring Soon</h4>
-                        </div>
-                        <span style="background: #fef9e7; color: #f39c12; padding: 4px 10px; border-radius: 20px; font-size: 11px; font-weight: 600;">${data.expiringProducts.filter(p => p.type === 'warning').length} items</span>
-                    </div>
-            `;
-            
-            data.expiringProducts
-                .filter(p => p.type === 'warning')
-                .forEach(product => {
-                    const expiryText = formatExpiryDate(product.expiryDate);
-                    html += `
-                        <div class="notification-item warning" style="background: #fef9e7; border-left: 4px solid #f39c12; border-radius: 10px; padding: 15px; margin-bottom: 8px; cursor: pointer;" onclick="window.location.href='inventory.html'">
-                            <div style="display: flex; align-items: flex-start; gap: 12px;">
-                                <div style="width: 36px; height: 36px; background: rgba(243, 156, 18, 0.1); border-radius: 8px; display: flex; align-items: center; justify-content: center;">
-                                    <i class="fas fa-clock" style="color: #f39c12; font-size: 16px;"></i>
-                                </div>
-                                <div style="flex: 1;">
-                                    <div style="font-weight: 600; color: #2c3e50; margin-bottom: 4px;">${product.name}</div>
-                                    <div style="font-size: 12px; color: #7f8c8d; display: flex; gap: 15px; flex-wrap: wrap;">
-                                        <span><i class="fas fa-barcode"></i> ${product.serial || 'N/A'}</span>
-                                        <span><i class="far fa-clock"></i> Expires ${expiryText}</span>
-                                    </div>
-                                </div>
-                            </div>
-                        </div>
-                    `;
-                });
-            
-            html += `</div>`;
-        }
-        
-        // Low stock items
-        if (data.lowStockProducts.length > 0) {
-            html += `
-                <div style="margin-bottom: 20px;">
-                    <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; padding: 0 5px;">
-                        <div style="display: flex; align-items: center; gap: 8px;">
-                            <div style="width: 8px; height: 8px; background: #3498db; border-radius: 50%;"></div>
-                            <h4 style="margin: 0; font-size: 14px; color: #3498db; font-weight: 600;">Low Stock Alert</h4>
-                        </div>
-                        <span style="background: #e8f4fd; color: #3498db; padding: 4px 10px; border-radius: 20px; font-size: 11px; font-weight: 600;">${data.lowStockProducts.length} items</span>
-                    </div>
-            `;
-            
-            data.lowStockProducts.forEach(product => {
+        if (otherItems.length > 0) {
+            html += `<div style="margin-bottom: 20px;"><div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; padding: 0 5px;"><div style="display: flex; align-items: center; gap: 8px;"><div style="width: 8px; height: 8px; background: #3498db; border-radius: 50%;"></div><h4 style="margin: 0; font-size: 14px; color: #3498db; font-weight: 600;">Low Stock Alert</h4></div><span style="background: #e8f4fd; color: #3498db; padding: 4px 10px; border-radius: 20px; font-size: 11px; font-weight: 600;">${otherItems.length} items</span></div>`;
+            otherItems.forEach(product => {
                 const percentRemaining = Math.round((product.stock / product.threshold) * 100);
                 const barColor = percentRemaining < 20 ? '#e74c3c' : (percentRemaining < 50 ? '#f39c12' : '#3498db');
-                
-                html += `
-                    <div class="notification-item low-stock" style="background: #e8f4fd; border-left: 4px solid #3498db; border-radius: 10px; padding: 15px; margin-bottom: 8px; cursor: pointer;" onclick="window.location.href='inventory.html'">
-                        <div style="display: flex; align-items: flex-start; gap: 12px;">
-                            <div style="width: 36px; height: 36px; background: rgba(52, 152, 219, 0.1); border-radius: 8px; display: flex; align-items: center; justify-content: center;">
-                                <i class="fas fa-boxes" style="color: #3498db; font-size: 16px;"></i>
-                            </div>
-                            <div style="flex: 1;">
-                                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
-                                    <span style="font-weight: 600; color: #2c3e50;">${product.name}</span>
-                                    <span style="background: ${barColor}; color: white; padding: 2px 8px; border-radius: 12px; font-size: 10px; font-weight: 600;">${percentRemaining}%</span>
-                                </div>
-                                <div style="font-size: 12px; color: #7f8c8d; margin-bottom: 8px;">
-                                    Stock: ${product.stock} / ${product.threshold} units
-                                </div>
-                                <div style="width: 100%; height: 6px; background: #e0e0e0; border-radius: 3px; overflow: hidden;">
-                                    <div style="width: ${percentRemaining}%; height: 100%; background: ${barColor}; border-radius: 3px; transition: width 0.3s ease;"></div>
-                                </div>
-                            </div>
-                        </div>
-                    </div>
-                `;
+                html += `<div class="notification-item low-stock" style="background: #e8f4fd; border-left: 4px solid #3498db; border-radius: 10px; padding: 15px; margin-bottom: 8px; cursor: pointer;" onclick="window.location.href='inventory.html'"><div style="display: flex; align-items: flex-start; gap: 12px;"><div style="width: 36px; height: 36px; background: rgba(52, 152, 219, 0.1); border-radius: 8px; display: flex; align-items: center; justify-content: center;"><i class="fas fa-boxes" style="color: #3498db; font-size: 16px;"></i></div><div style="flex: 1;"><div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;"><span style="font-weight: 600; color: #2c3e50;">${product.name}</span><span style="background: ${barColor}; color: white; padding: 2px 8px; border-radius: 12px; font-size: 10px; font-weight: 600;">${percentRemaining}%</span></div><div style="font-size: 12px; color: #7f8c8d; margin-bottom: 8px;">Stock: ${product.stock} / ${product.threshold} units</div><div style="width: 100%; height: 6px; background: #e0e0e0; border-radius: 3px; overflow: hidden;"><div style="width: ${percentRemaining}%; height: 100%; background: ${barColor}; border-radius: 3px; transition: width 0.3s ease;"></div></div></div></div></div>`;
             });
-            
             html += `</div>`;
         }
     }
@@ -699,7 +542,7 @@ function setupDiscountOptions() {
     const discountContainer = document.querySelector('.discount-container');
     if (!discountContainer) return;
     
-    const discountHTML = `
+    discountContainer.innerHTML = `
         <div class="discount-options">
             <label class="discount-option">
                 <input type="radio" name="discountType" value="none" checked>
@@ -707,35 +550,24 @@ function setupDiscountOptions() {
             </label>
             <label class="discount-option">
                 <input type="radio" name="discountType" value="seniorPWD">
-                <span class="discount-option-label">
-                    <i class="fas fa-id-card"></i> Senior / PWD (20%)
-                </span>
+                <span class="discount-option-label"><i class="fas fa-id-card"></i> Senior / PWD (20%)</span>
             </label>
             <label class="discount-option">
                 <input type="radio" name="discountType" value="yakap">
-                <span class="discount-option-label">
-                    <i class="fas fa-heart"></i> YAKAP (30%)
-                </span>
+                <span class="discount-option-label"><i class="fas fa-heart"></i> YAKAP (30%)</span>
             </label>
         </div>
     `;
-    
-    discountContainer.innerHTML = discountHTML;
     
     document.querySelectorAll('input[name="discountType"]').forEach(radio => {
         radio.addEventListener('change', (e) => {
             currentDiscountType = e.target.value;
             currentDiscount = currentDiscountType === 'none' ? 0 : DISCOUNT_RATES[currentDiscountType];
             updateCartDisplay();
-            if (document.getElementById('checkoutModal').style.display === 'block') {
-                updateCheckoutModal();
-            }
+            if (document.getElementById('checkoutModal').style.display === 'block') updateCheckoutModal();
             
-            if (currentDiscountType === 'seniorPWD') {
-                showNotification('Senior/PWD discount applied (20%)', 'info');
-            } else if (currentDiscountType === 'yakap') {
-                showNotification('YAKAP discount applied (30%)', 'info');
-            }
+            if (currentDiscountType === 'seniorPWD') showNotification('Senior/PWD discount applied (20%)', 'info');
+            else if (currentDiscountType === 'yakap') showNotification('YAKAP discount applied (30%)', 'info');
         });
     });
 }
@@ -749,9 +581,7 @@ function setupSellExpiringToggle() {
             <div class="sell-expiring-toggle" id="sellExpiringToggle">
                 <label class="toggle-label">
                     <input type="checkbox" id="sellExpiringCheckbox" checked>
-                    <span class="toggle-text">
-                        <i class="fas fa-clock"></i> Sell Expiring First
-                    </span>
+                    <span class="toggle-text"><i class="fas fa-clock"></i> Sell Expiring First</span>
                 </label>
                 <span class="toggle-info" title="When enabled, items that expire soon will be sold first (FEFO - First Expiry First Out)">
                     <i class="fas fa-info-circle"></i>
@@ -770,17 +600,16 @@ function setupSellExpiringToggle() {
 // Optimized function to get stock items with caching
 async function getStockItemsWithCache(forceRefresh = false) {
     const now = Date.now();
-    if (!forceRefresh && stockItemsCache && (now - lastStockFetch) < STOCK_CACHE_DURATION) {
-        return stockItemsCache;
+    if (!forceRefresh && stockItemsCache.data && (now - stockItemsCache.timestamp) < STOCK_CACHE_DURATION) {
+        return stockItemsCache.data;
     }
     
     const snapshot = await getDocs(collection(db, "stock_items"));
-    stockItemsCache = snapshot;
-    lastStockFetch = now;
+    stockItemsCache = { data: snapshot, timestamp: now };
     return snapshot;
 }
 
-// ==================== POS FUNCTIONS WITH EXPIRY WARNINGS ====================
+// ==================== OPTIMIZED PRODUCT LOADING ====================
 
 function loadProducts() {
     try {
@@ -789,55 +618,47 @@ function loadProducts() {
         
         productsGrid.innerHTML = '<div class="loading">Loading products...</div>';
         
-        if (unsubscribeProducts) {
-            unsubscribeProducts();
-        }
+        if (unsubscribeProducts) unsubscribeProducts();
         
         const productsRef = collection(db, "products");
-        
-        // Use a debounced update to prevent too frequent renders
         let updateTimeout;
+        
         unsubscribeProducts = onSnapshot(productsRef, async (snapshot) => {
             if (updateTimeout) clearTimeout(updateTimeout);
             
             updateTimeout = setTimeout(async () => {
-                products = [];
-                
                 if (snapshot.empty) {
                     productsGrid.innerHTML = '<p class="no-data">No products available</p>';
                     return;
                 }
                 
-                // Get stock items with cache
+                // Use cached stock items
                 const stockItemsSnapshot = await getStockItemsWithCache();
-                const today = new Date();
-                today.setHours(0, 0, 0, 0);
-                const thirtyDaysFromNow = new Date(today);
-                thirtyDaysFromNow.setDate(thirtyDaysFromNow.getDate() + 30);
+                const today = new Date(); today.setHours(0, 0, 0, 0);
+                const thirtyDaysFromNow = new Date(today); thirtyDaysFromNow.setDate(thirtyDaysFromNow.getDate() + 30);
                 
                 // Create expiry map in one pass
                 const expiryMap = new Map();
                 
                 stockItemsSnapshot.forEach(doc => {
                     const item = doc.data();
-                    if (item.expiryDate && item.status === 'available') {
+                    if (item.expiryDate && item.status === 'available' && item.productId) {
                         const expiryDate = item.expiryDate.toDate();
                         expiryDate.setHours(0, 0, 0, 0);
                         
                         if (expiryDate <= thirtyDaysFromNow) {
-                            const productId = item.productId;
-                            if (!expiryMap.has(productId)) {
-                                expiryMap.set(productId, {
+                            if (!expiryMap.has(item.productId)) {
+                                expiryMap.set(item.productId, {
                                     count: 0,
                                     earliestExpiry: expiryDate,
                                     items: []
                                 });
                             }
-                            const productExpiry = expiryMap.get(productId);
+                            const productExpiry = expiryMap.get(item.productId);
                             productExpiry.count++;
                             productExpiry.items.push({
                                 id: doc.id,
-                                expiryDate: expiryDate,
+                                expiryDate,
                                 batchNumber: item.batchNumber,
                                 serialNumber: item.serialNumber
                             });
@@ -848,13 +669,15 @@ function loadProducts() {
                     }
                 });
                 
-                // Build products array
+                // Build products array efficiently
+                products = [];
                 snapshot.forEach(doc => {
                     const product = { id: doc.id, ...doc.data() };
                     if (expiryMap.has(product.id)) {
-                        product.expiringCount = expiryMap.get(product.id).count;
-                        product.earliestExpiry = expiryMap.get(product.id).earliestExpiry;
-                        product.expiringItems = expiryMap.get(product.id).items;
+                        const expData = expiryMap.get(product.id);
+                        product.expiringCount = expData.count;
+                        product.earliestExpiry = expData.earliestExpiry;
+                        product.expiringItems = expData.items;
                     } else {
                         product.expiringCount = 0;
                         product.expiringItems = [];
@@ -862,13 +685,15 @@ function loadProducts() {
                     products.push(product);
                 });
                 
-                // Clear filters
-                document.getElementById('posSearch').value = '';
-                document.getElementById('posCategoryFilter').value = '';
+                // Clear filters and display
+                const searchInput = document.getElementById('posSearch');
+                const filterSelect = document.getElementById('posCategoryFilter');
+                if (searchInput) searchInput.value = '';
+                if (filterSelect) filterSelect.value = '';
                 
                 displayProducts(products);
                 updateCartDisplay();
-            }, 300); // Debounce updates
+            }, 300);
         }, (error) => {
             console.error("Error in real-time listener:", error);
             productsGrid.innerHTML = '<p class="error">Error loading products</p>';
@@ -902,10 +727,15 @@ function displayProducts(productsToShow) {
         let discountBadge = '';
         if (product.discountable === false) {
             discountBadge = '<span class="non-discount-badge"><i class="fas fa-ban"></i> No Discount</span>';
+        } else if (product.discountable === 'prescription') {
+            discountBadge = '<span class="prescription-badge"><i class="fas fa-prescription"></i> Rx Required</span>';
         }
         
         const brandName = product.brand || product.name || 'Unnamed';
         const genericName = product.generic ? `<small class="generic-name">${product.generic}</small>` : '';
+        
+        // Add syrup badge
+        const syrupBadge = product.subcategory === 'syrup' ? '<span class="syrup-badge"> Syrup</span>' : '';
         
         let expiryWarning = '';
         if (product.expiringCount > 0) {
@@ -920,26 +750,19 @@ function displayProducts(productsToShow) {
                 expiryText = `⏰ ${product.expiringCount} expiring in ${daysUntil} days`;
             }
             
-            expiryWarning = `
-                <div class="${expiryClass}" title="${product.expiringCount} item(s) expiring soon. Earliest: ${product.earliestExpiry.toLocaleDateString()}">
-                    <i class="fas fa-clock"></i> ${expiryText}
-                </div>
-            `;
+            expiryWarning = `<div class="${expiryClass}" title="${product.expiringCount} item(s) expiring soon. Earliest: ${product.earliestExpiry.toLocaleDateString()}"><i class="fas fa-clock"></i> ${expiryText}</div>`;
         }
         
         productCard.innerHTML = `
-            <div class="product-image">
-                <i class="fas fa-pills"></i>
-            </div>
-            <h4>${brandName}</h4>
+            <div class="product-image"><i class="fas fa-pills"></i></div>
+            <h4>${brandName} ${syrupBadge}</h4>
             ${genericName}
             <p class="product-price">₱${(product.price || 0).toFixed(2)}</p>
             <p class="product-stock ${isOutOfStock ? 'text-danger' : ''}">Stock: ${product.stock || 0}</p>
             ${discountBadge}
             ${expiryWarning}
             ${isOutOfStock ? '<span class="out-of-stock-label">OUT OF STOCK</span>' : ''}
-            <button class="add-to-cart" ${isOutOfStock ? 'disabled' : ''} 
-                    data-id="${product.id}">
+            <button class="add-to-cart" ${isOutOfStock ? 'disabled' : ''} data-id="${product.id}">
                 ${isOutOfStock ? 'Unavailable' : 'Add to Cart'}
             </button>
         `;
@@ -956,12 +779,12 @@ function displayProducts(productsToShow) {
 // Filter functions with debounce
 const posSearch = document.getElementById('posSearch');
 if (posSearch) {
-    posSearch.addEventListener('input', debounce(() => filterPOSProducts(), 300));
+    posSearch.addEventListener('input', debounce(filterPOSProducts, 300));
 }
 
 const posCategoryFilter = document.getElementById('posCategoryFilter');
 if (posCategoryFilter) {
-    posCategoryFilter.addEventListener('change', () => filterPOSProducts());
+    posCategoryFilter.addEventListener('change', filterPOSProducts);
 }
 
 function filterPOSProducts() {
@@ -999,17 +822,9 @@ function debounce(func, wait) {
 function addToCart(productId) {
     const product = products.find(p => p.id === productId);
     
-    if (!product) {
-        showNotification('Product not found', 'error');
-        return;
-    }
+    if (!product) { showNotification('Product not found', 'error'); return; }
+    if (product.stock <= 0) { showNotification('This product is out of stock!', 'error'); return; }
     
-    if (product.stock <= 0) {
-        showNotification('This product is out of stock!', 'error');
-        return;
-    }
-    
-    // Check if product has expiring items and show warning
     if (product.expiringCount > 0) {
         const today = new Date();
         const daysUntil = Math.ceil((product.earliestExpiry - today) / (1000 * 60 * 60 * 24));
@@ -1040,6 +855,8 @@ function addToCart(productId) {
             quantity: 1,
             stock: product.stock,
             discountable: product.discountable !== false,
+            prescriptionRequired: product.discountable === 'prescription',
+            subcategory: product.subcategory,
             expiringCount: product.expiringCount,
             earliestExpiry: product.earliestExpiry,
             expiringItems: product.expiringItems || []
@@ -1058,10 +875,7 @@ function updateCartDisplay() {
     
     if (!cartItems) return;
     
-    // Clear cart first
     cartItems.innerHTML = '';
-    let subtotal = 0;
-    
     if (cart.length === 0) {
         cartItems.innerHTML = '<p class="empty-cart">Cart is empty</p>';
         if (subtotalEl) subtotalEl.textContent = '₱0.00';
@@ -1074,20 +888,15 @@ function updateCartDisplay() {
     if (discountInfoEl) {
         if (currentDiscountType !== 'none') {
             const discountName = currentDiscountType === 'seniorPWD' ? 'Senior/PWD' : 'YAKAP';
-            discountInfoEl.innerHTML = `
-                <div class="discount-info-badge ${currentDiscountType}">
-                    <i class="fas fa-${currentDiscountType === 'seniorPWD' ? 'id-card' : 'heart'}"></i>
-                    ${discountName} Discount (${currentDiscount}%)
-                </div>
-            `;
+            discountInfoEl.innerHTML = `<div class="discount-info-badge ${currentDiscountType}"><i class="fas fa-${currentDiscountType === 'seniorPWD' ? 'id-card' : 'heart'}"></i> ${discountName} Discount (${currentDiscount}%)</div>`;
         } else {
             discountInfoEl.innerHTML = '';
         }
     }
     
-    // Use fragment for batch DOM updates
     const fragment = document.createDocumentFragment();
     const today = new Date();
+    let subtotal = 0;
     
     cart.forEach((item, index) => {
         const itemTotal = item.price * item.quantity;
@@ -1095,48 +904,41 @@ function updateCartDisplay() {
         
         const product = products.find(p => p.id === item.id);
         const currentStock = product ? product.stock : 0;
-        const discountable = item.discountable !== false;
         
         const cartItem = document.createElement('div');
         cartItem.className = 'cart-item';
         
         let discountableBadge = '';
-        if (!discountable) {
+        if (item.discountable === false) {
             discountableBadge = '<span class="non-discount-badge-small"><i class="fas fa-ban"></i> No Discount</span>';
+        } else if (item.prescriptionRequired) {
+            discountableBadge = '<span class="prescription-badge-small"><i class="fas fa-prescription"></i> Rx Required</span>';
         }
         
         const genericDisplay = item.generic ? `<small class="generic-cart">${item.generic}</small>` : '';
+        const syrupBadge = item.subcategory === 'syrup' ? '<span class="syrup-badge-small">Syrup</span>' : '';
         
         let expiryWarning = '';
         if (item.expiringCount > 0) {
             const daysUntil = Math.ceil((item.earliestExpiry - today) / (1000 * 60 * 60 * 24));
-            let warningClass = daysUntil <= 7 ? 'expiry-critical-text' : 'expiry-warning-text';
+            const warningClass = daysUntil <= 7 ? 'expiry-critical-text' : 'expiry-warning-text';
             expiryWarning = `<small class="${warningClass}">⚠️ ${item.expiringCount} expiring in ${daysUntil} days</small>`;
         }
         
         cartItem.innerHTML = `
             <div class="cart-item-info">
-                <h4>${item.brand} ${discountableBadge}</h4>
+                <h4>${item.brand} ${syrupBadge} ${discountableBadge}</h4>
                 ${genericDisplay}
                 <p>₱${item.price.toFixed(2)} x ${item.quantity}</p>
-                <small class="${item.quantity > currentStock ? 'text-danger' : ''}">
-                    Available: ${currentStock}
-                </small>
+                <small class="${item.quantity > currentStock ? 'text-danger' : ''}">Available: ${currentStock}</small>
                 ${expiryWarning}
             </div>
             <div class="cart-item-actions">
                 <span>₱${itemTotal.toFixed(2)}</span>
-                <button class="quantity-btn decrease-qty" data-index="${index}">
-                    <i class="fas fa-minus"></i>
-                </button>
+                <button class="quantity-btn decrease-qty" data-index="${index}"><i class="fas fa-minus"></i></button>
                 <span class="quantity">${item.quantity}</span>
-                <button class="quantity-btn increase-qty" data-index="${index}" 
-                    ${item.quantity >= currentStock ? 'disabled' : ''}>
-                    <i class="fas fa-plus"></i>
-                </button>
-                <button class="remove-item" data-index="${index}">
-                    <i class="fas fa-trash"></i>
-                </button>
+                <button class="quantity-btn increase-qty" data-index="${index}" ${item.quantity >= currentStock ? 'disabled' : ''}><i class="fas fa-plus"></i></button>
+                <button class="remove-item" data-index="${index}"><i class="fas fa-trash"></i></button>
             </div>
         `;
         fragment.appendChild(cartItem);
@@ -1148,11 +950,8 @@ function updateCartDisplay() {
     document.querySelectorAll('.decrease-qty').forEach(btn => {
         btn.addEventListener('click', () => {
             const index = parseInt(btn.dataset.index);
-            if (cart[index].quantity > 1) {
-                cart[index].quantity--;
-            } else {
-                cart.splice(index, 1);
-            }
+            if (cart[index].quantity > 1) cart[index].quantity--;
+            else cart.splice(index, 1);
             updateCartDisplay();
         });
     });
@@ -1162,12 +961,8 @@ function updateCartDisplay() {
             const index = parseInt(btn.dataset.index);
             const item = cart[index];
             const product = products.find(p => p.id === item.id);
-            
-            if (product && item.quantity < product.stock) {
-                item.quantity++;
-            } else {
-                showNotification(`Only ${product?.stock} items available!`, 'error');
-            }
+            if (product && item.quantity < product.stock) item.quantity++;
+            else showNotification(`Only ${product?.stock} items available!`, 'error');
             updateCartDisplay();
         });
     });
@@ -1181,16 +976,11 @@ function updateCartDisplay() {
     });
     
     // Calculate totals
-    let discountableSubtotal = 0;
-    let nonDiscountableSubtotal = 0;
-    
+    let discountableSubtotal = 0, nonDiscountableSubtotal = 0;
     cart.forEach(item => {
         const itemTotal = item.price * item.quantity;
-        if (item.discountable !== false) {
-            discountableSubtotal += itemTotal;
-        } else {
-            nonDiscountableSubtotal += itemTotal;
-        }
+        if (item.discountable !== false && !item.prescriptionRequired) discountableSubtotal += itemTotal;
+        else nonDiscountableSubtotal += itemTotal;
     });
     
     const discountAmount = discountableSubtotal * (currentDiscount / 100);
@@ -1211,10 +1001,7 @@ async function deductStockWithExpiryPriority(productId, quantityToDeduct) {
         );
         
         const stockItemsSnapshot = await getDocs(stockItemsQuery);
-        
-        if (stockItemsSnapshot.empty) {
-            return false;
-        }
+        if (stockItemsSnapshot.empty) return false;
         
         // Convert to array and sort
         const stockItems = [];
@@ -1225,12 +1012,7 @@ async function deductStockWithExpiryPriority(productId, quantityToDeduct) {
                 expiryDate = item.expiryDate.toDate();
                 expiryDate.setHours(0, 0, 0, 0);
             }
-            
-            stockItems.push({
-                id: doc.id,
-                ...item,
-                expiryDate: expiryDate
-            });
+            stockItems.push({ id: doc.id, ...item, expiryDate });
         });
         
         // Sort based on setting
@@ -1250,25 +1032,14 @@ async function deductStockWithExpiryPriority(productId, quantityToDeduct) {
         
         for (const stockItem of stockItems) {
             if (remainingToDeduct <= 0) break;
-            
-            const stockItemRef = doc(db, "stock_items", stockItem.id);
-            batch.update(stockItemRef, {
-                status: 'sold',
-                soldDate: Timestamp.now(),
-                soldBy: loggedInUserId
-            });
-            
+            batch.update(doc(db, "stock_items", stockItem.id), { status: 'sold', soldDate: Timestamp.now(), soldBy: loggedInUserId });
             remainingToDeduct--;
         }
         
-        if (remainingToDeduct > 0) {
-            return false;
-        }
+        if (remainingToDeduct > 0) return false;
         
         await batch.commit();
-        
-        // Invalidate stock cache
-        stockItemsCache = null;
+        stockItemsCache = { data: null, timestamp: 0 }; // Invalidate cache
         
         return true;
         
@@ -1282,10 +1053,7 @@ async function deductStockWithExpiryPriority(productId, quantityToDeduct) {
 const checkoutBtn = document.getElementById('checkoutBtn');
 if (checkoutBtn) {
     checkoutBtn.addEventListener('click', () => {
-        if (cart.length === 0) {
-            showNotification('Cart is empty!', 'error');
-            return;
-        }
+        if (cart.length === 0) { showNotification('Cart is empty!', 'error'); return; }
         
         const expiringItems = cart.filter(item => item.expiringCount > 0);
         if (expiringItems.length > 0 && sellExpiringFirst) {
@@ -1332,19 +1100,15 @@ function updateCheckoutModal() {
     
     if (!checkoutItems) return;
     
-    let discountableSubtotal = 0;
-    let nonDiscountableSubtotal = 0;
+    let discountableSubtotal = 0, nonDiscountableSubtotal = 0;
     checkoutItems.innerHTML = '';
     
     const fragment = document.createDocumentFragment();
     
     cart.forEach(item => {
         const itemTotal = item.price * item.quantity;
-        if (item.discountable !== false) {
-            discountableSubtotal += itemTotal;
-        } else {
-            nonDiscountableSubtotal += itemTotal;
-        }
+        if (item.discountable !== false && !item.prescriptionRequired) discountableSubtotal += itemTotal;
+        else nonDiscountableSubtotal += itemTotal;
         
         const itemDiv = document.createElement('div');
         itemDiv.className = 'checkout-item';
@@ -1355,10 +1119,11 @@ function updateCheckoutModal() {
         }
         
         const displayName = item.generic ? `${item.brand} (${item.generic})` : item.brand;
+        const syrupBadge = item.subcategory === 'syrup' ? ' Syrup' : '';
         
         itemDiv.innerHTML = `
             <div class="checkout-product-info">
-                <span class="product-name">${displayName}</span>
+                <span class="product-name">${displayName}${syrupBadge}</span>
                 <span class="product-detail">₱${item.price.toFixed(2)} x ${item.quantity}</span>
                 ${expiryNote}
             </div>
@@ -1377,12 +1142,7 @@ function updateCheckoutModal() {
     if (checkoutDiscountType) {
         if (currentDiscountType !== 'none') {
             const discountName = currentDiscountType === 'seniorPWD' ? 'Senior/PWD' : 'YAKAP';
-            checkoutDiscountType.innerHTML = `
-                <span class="discount-type-badge ${currentDiscountType}">
-                    <i class="fas fa-${currentDiscountType === 'seniorPWD' ? 'id-card' : 'heart'}"></i>
-                    ${discountName}
-                </span>
-            `;
+            checkoutDiscountType.innerHTML = `<span class="discount-type-badge ${currentDiscountType}"><i class="fas fa-${currentDiscountType === 'seniorPWD' ? 'id-card' : 'heart'}"></i> ${discountName}</span>`;
         } else {
             checkoutDiscountType.innerHTML = '<span class="discount-type-badge">No Discount</span>';
         }
@@ -1401,12 +1161,7 @@ function updateCheckoutModal() {
         const expiryNote = document.createElement('div');
         expiryNote.id = 'checkoutExpiryNote';
         expiryNote.className = 'checkout-expiry-note';
-        expiryNote.innerHTML = `
-            <i class="fas fa-${sellExpiringFirst ? 'check-circle' : 'clock'}"></i>
-            ${sellExpiringFirst ? 
-                '<span>Sell Expiring First is <strong>ENABLED</strong> - Expiring items will be sold first</span>' : 
-                '<span>Sell Expiring First is <strong>DISABLED</strong> - Normal FIFO ordering</span>'}
-        `;
+        expiryNote.innerHTML = `<i class="fas fa-${sellExpiringFirst ? 'check-circle' : 'clock'}"></i> ${sellExpiringFirst ? '<span>Sell Expiring First is <strong>ENABLED</strong> - Expiring items will be sold first</span>' : '<span>Sell Expiring First is <strong>DISABLED</strong> - Normal FIFO ordering</span>'}`;
         paymentSection.insertBefore(expiryNote, paymentSection.firstChild);
     }
 }
@@ -1426,19 +1181,13 @@ function updateChangeAmount() {
 const processPaymentBtn = document.getElementById('processPaymentBtn');
 if (processPaymentBtn) {
     processPaymentBtn.addEventListener('click', async () => {
-        if (isProcessingPayment) {
-            showNotification('Payment is already being processed...', 'info');
-            return;
-        }
+        if (isProcessingPayment) { showNotification('Payment is already being processed...', 'info'); return; }
         
         const paymentMethod = document.getElementById('paymentMethod').value;
         const amount = parseFloat(document.getElementById('amountTendered').value) || 0;
         const total = parseFloat(document.getElementById('checkoutTotal').textContent.replace('₱', ''));
         
-        if (amount < total) {
-            showNotification('Insufficient amount!', 'error');
-            return;
-        }
+        if (amount < total) { showNotification('Insufficient amount!', 'error'); return; }
         
         isProcessingPayment = true;
         processPaymentBtn.disabled = true;
@@ -1448,16 +1197,11 @@ if (processPaymentBtn) {
             const invoiceNumber = await generateInvoiceNumber();
             const cashierName = document.getElementById('sidebarUserName')?.textContent || 'Unknown';
             
-            let discountableSubtotal = 0;
-            let nonDiscountableSubtotal = 0;
-            
+            let discountableSubtotal = 0, nonDiscountableSubtotal = 0;
             cart.forEach(item => {
                 const itemTotal = item.price * item.quantity;
-                if (item.discountable !== false) {
-                    discountableSubtotal += itemTotal;
-                } else {
-                    nonDiscountableSubtotal += itemTotal;
-                }
+                if (item.discountable !== false && !item.prescriptionRequired) discountableSubtotal += itemTotal;
+                else nonDiscountableSubtotal += itemTotal;
             });
             
             const discountPercentage = currentDiscount;
@@ -1465,29 +1209,22 @@ if (processPaymentBtn) {
             const subtotal = discountableSubtotal + nonDiscountableSubtotal;
             const totalAmount = subtotal - discountAmount;
             
-            const today = new Date();
-            today.setHours(0, 0, 0, 0);
-            const thirtyDaysFromNow = new Date(today);
-            thirtyDaysFromNow.setDate(thirtyDaysFromNow.getDate() + 30);
+            const today = new Date(); today.setHours(0, 0, 0, 0);
+            const thirtyDaysFromNow = new Date(today); thirtyDaysFromNow.setDate(thirtyDaysFromNow.getDate() + 30);
             
             const processedItems = cart.map(item => {
                 let wasExpiring = false;
-                
-                if (item.expiringItems && item.expiringItems.length > 0) {
-                    wasExpiring = true;
-                } else if (item.earliestExpiry) {
+                if (item.expiringItems?.length > 0) wasExpiring = true;
+                else if (item.earliestExpiry) {
                     const daysUntil = Math.ceil((item.earliestExpiry - today) / (1000 * 60 * 60 * 24));
                     wasExpiring = daysUntil <= 30;
-                } else if (item.expiringCount > 0) {
-                    wasExpiring = true;
-                }
+                } else if (item.expiringCount > 0) wasExpiring = true;
                 
                 const itemOriginalTotal = item.price * item.quantity;
-                
                 let itemDiscountedTotal = itemOriginalTotal;
                 let itemDiscountAmount = 0;
                 
-                if (item.discountable !== false && discountPercentage > 0) {
+                if ((item.discountable !== false && !item.prescriptionRequired) && discountPercentage > 0) {
                     const itemShare = itemOriginalTotal / discountableSubtotal;
                     itemDiscountAmount = discountAmount * itemShare;
                     itemDiscountedTotal = itemOriginalTotal - itemDiscountAmount;
@@ -1497,50 +1234,48 @@ if (processPaymentBtn) {
                     productId: item.id,
                     brand: item.brand,
                     generic: item.generic,
+                    subcategory: item.subcategory,
                     price: item.price,
                     quantity: item.quantity,
                     originalTotal: itemOriginalTotal,
                     discountAmount: itemDiscountAmount,
                     subtotal: itemDiscountedTotal,
                     discountable: item.discountable !== false,
+                    prescriptionRequired: item.prescriptionRequired,
                     wasExpiring: wasExpiring,
                     expiryCount: item.expiringCount || 0
                 };
             });
             
             const saleData = {
-                invoiceNumber: invoiceNumber,
+                invoiceNumber,
                 discountType: currentDiscountType,
                 discountRate: discountPercentage,
                 items: processedItems,
-                subtotal: subtotal,
-                discountableSubtotal: discountableSubtotal,
-                nonDiscountableSubtotal: nonDiscountableSubtotal,
-                discountPercentage: discountPercentage,
-                discountAmount: discountAmount,
+                subtotal,
+                discountableSubtotal,
+                nonDiscountableSubtotal,
+                discountPercentage,
+                discountAmount,
                 total: totalAmount,
-                paymentMethod: paymentMethod,
+                paymentMethod,
                 amountTendered: amount,
                 change: amount - totalAmount,
                 date: Timestamp.now(),
                 cashierId: loggedInUserId,
-                cashierName: cashierName,
-                sellExpiringFirst: sellExpiringFirst,
+                cashierName,
+                sellExpiringFirst,
                 hadExpiringItems: cart.some(item => item.expiringCount > 0)
             };
             
-            // Save sale and update stock in parallel
             await Promise.all([
                 addDoc(collection(db, "sales"), saleData),
                 ...cart.map(item => updateProductStock(item))
             ]);
             
             let discountText = '';
-            if (currentDiscountType === 'seniorPWD') {
-                discountText = ' (Senior/PWD 20%)';
-            } else if (currentDiscountType === 'yakap') {
-                discountText = ' (YAKAP 30%)';
-            }
+            if (currentDiscountType === 'seniorPWD') discountText = ' (Senior/PWD 20%)';
+            else if (currentDiscountType === 'yakap') discountText = ' (YAKAP 30%)';
             
             let modeText = sellExpiringFirst ? ' (FEFO - Expiring first)' : ' (FIFO)';
             await addDoc(collection(db, "activities"), {
@@ -1588,15 +1323,9 @@ async function updateProductStock(item) {
         const newStock = currentStock - item.quantity;
         
         const deductionSuccess = await deductStockWithExpiryPriority(item.id, item.quantity);
+        if (!deductionSuccess) throw new Error(`Failed to deduct stock for ${item.brand}`);
         
-        if (!deductionSuccess) {
-            throw new Error(`Failed to deduct stock for ${item.brand}`);
-        }
-        
-        await updateDoc(productRef, {
-            stock: newStock,
-            lastUpdated: Timestamp.now()
-        });
+        await updateDoc(productRef, { stock: newStock, lastUpdated: Timestamp.now() });
         
         await addDoc(collection(db, "activities"), {
             type: 'stock',
@@ -1623,10 +1352,8 @@ async function generateInvoiceNumber() {
         const month = (today.getMonth() + 1).toString().padStart(2, '0');
         const day = today.getDate().toString().padStart(2, '0');
         
-        const startOfDay = new Date(today);
-        startOfDay.setHours(0, 0, 0, 0);
-        const endOfDay = new Date(today);
-        endOfDay.setHours(23, 59, 59, 999);
+        const startOfDay = new Date(today); startOfDay.setHours(0, 0, 0, 0);
+        const endOfDay = new Date(today); endOfDay.setHours(23, 59, 59, 999);
         
         const salesQuery = query(
             collection(db, "sales"),
@@ -1644,63 +1371,12 @@ async function generateInvoiceNumber() {
     }
 }
 
-// Exchange Functions
+// Exchange Functions (simplified)
 const exchangeButton = document.getElementById('exchangeButton');
 if (exchangeButton) {
     exchangeButton.addEventListener('click', () => {
-        openExchangeModal();
-    });
-}
-
-async function openExchangeModal(saleId = null) {
-    const modal = document.getElementById('exchangeModal');
-    if (!modal) {
         showNotification('Exchange feature is being set up', 'info');
-        return;
-    }
-    
-    document.getElementById('exchangeSearch').value = '';
-    document.getElementById('exchangeSearchResults').innerHTML = '';
-    document.getElementById('selectedExchangeInfo').style.display = 'none';
-    
-    await loadNewProducts();
-    
-    const saleInfoDiv = document.getElementById('exchangeSaleInfo');
-    saleInfoDiv.innerHTML = '<h3>Search for a sale to process exchange</h3><p class="policy-note"><i class="fas fa-clock"></i> Exchanges only allowed within 24 hours of purchase</p>';
-    
-    modal.style.display = 'block';
-}
-
-async function loadNewProducts() {
-    try {
-        const productsSnapshot = await getDocs(collection(db, "products"));
-        const select = document.getElementById('newProductSelect');
-        if (!select) return;
-        
-        select.innerHTML = '<option value="">-- Select replacement product --</option>';
-        
-        productsSnapshot.forEach(doc => {
-            const product = doc.data();
-            if (product.stock > 0) {
-                const option = document.createElement('option');
-                option.value = doc.id;
-                option.dataset.price = product.price || 0;
-                option.dataset.brand = product.brand || product.name || 'Unnamed';
-                option.dataset.generic = product.generic || '';
-                option.dataset.stock = product.stock || 0;
-                option.dataset.expiringCount = product.expiringCount || 0;
-                
-                const displayName = product.generic ? 
-                    `${product.brand || product.name} (${product.generic})` : 
-                    (product.brand || product.name);
-                
-                option.textContent = `${displayName} - ₱${(product.price || 0).toFixed(2)} (Stock: ${product.stock})`;
-                select.appendChild(option);
-            }
-        });
-    } catch (error) {
-        console.error("Error loading new products:", error);
-    }
+    });
 }
 
 // Utility Functions
@@ -1716,9 +1392,7 @@ function showNotification(message, type = 'info') {
     notification.className = `notification-toast ${type}`;
     notification.style.display = 'block';
     
-    setTimeout(() => {
-        notification.style.display = 'none';
-    }, 3000);
+    setTimeout(() => { notification.style.display = 'none'; }, 3000);
 }
 
 function setupEventListeners() {
@@ -1743,17 +1417,10 @@ window.returnSoldItem = async function(stockItemId) {
         const stockItemRef = doc(db, "stock_items", stockItemId);
         const stockItemDoc = await getDoc(stockItemRef);
         
-        if (!stockItemDoc.exists()) {
-            showNotification('Stock item not found', 'error');
-            return;
-        }
+        if (!stockItemDoc.exists()) { showNotification('Stock item not found', 'error'); return; }
         
         const stockItem = stockItemDoc.data();
-        
-        if (stockItem.status !== 'sold') {
-            showNotification('This item is not marked as sold', 'error');
-            return;
-        }
+        if (stockItem.status !== 'sold') { showNotification('This item is not marked as sold', 'error'); return; }
         
         const batch = writeBatch(db);
         
@@ -1786,11 +1453,11 @@ window.returnSoldItem = async function(stockItemId) {
         
         const returnRef = doc(collection(db, "returns"));
         batch.set(returnRef, {
-            stockItemId: stockItemId,
+            stockItemId,
             productId: stockItem.productId,
             productName: stockItem.productName,
             serialNumber: stockItem.serialNumber,
-            wasExpiring: stockItem.expiryDate ? true : false,
+            wasExpiring: !!stockItem.expiryDate,
             expiryDate: stockItem.expiryDate || null,
             date: Timestamp.now(),
             returnedBy: loggedInUserId
@@ -1798,22 +1465,57 @@ window.returnSoldItem = async function(stockItemId) {
         
         await batch.commit();
         
-        // Invalidate stock cache
-        stockItemsCache = null;
+        stockItemsCache = { data: null, timestamp: 0 }; // Invalidate cache
         
         showNotification('Item returned to inventory successfully', 'success');
         
-        if (typeof loadInventory === 'function') {
-            loadInventory();
-        }
+        if (typeof loadInventory === 'function') loadInventory();
         
         const modal = document.getElementById('stockItemsModal');
-        if (modal && modal.style.display === 'block') {
-            modal.style.display = 'none';
-        }
+        if (modal && modal.style.display === 'block') modal.style.display = 'none';
         
     } catch (error) {
         console.error("Error returning item:", error);
         showNotification('Error returning item: ' + error.message, 'error');
     }
 };
+
+// Add CSS for new badges
+const style = document.createElement('style');
+style.textContent = `
+    .syrup-badge {
+        display: inline-block;
+        background: #9b59b6;
+        color: white;
+        font-size: 10px;
+        padding: 2px 6px;
+        border-radius: 4px;
+        margin-left: 5px;
+    }
+    .syrup-badge-small {
+        display: inline-block;
+        background: #9b59b6;
+        color: white;
+        font-size: 8px;
+        padding: 2px 4px;
+        border-radius: 3px;
+        margin-left: 3px;
+    }
+    .prescription-badge {
+        background: #e3f2fd;
+        color: #0d47a1;
+        padding: 2px 8px;
+        border-radius: 12px;
+        font-size: 10px;
+        display: inline-block;
+    }
+    .prescription-badge-small {
+        background: #e3f2fd;
+        color: #0d47a1;
+        padding: 2px 6px;
+        border-radius: 10px;
+        font-size: 9px;
+        display: inline-block;
+    }
+`;
+document.head.appendChild(style);
