@@ -234,7 +234,7 @@ function createNotificationElements() {
         `;
         
         popup.innerHTML = `
-            <div class="notification-popup-header" style="padding: 20px; border-bottom: 1px solid #eef2f6; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);">
+            <div class="notification-popup-header" style="padding: 20px; border-bottom: 1px solid #eef2f6; background: #090174">
                 <div style="display: flex; justify-content: space-between; align-items: center;">
                     <div style="display: flex; align-items: center; gap: 12px;">
                         <div style="width: 40px; height: 40px; background: rgba(255,255,255,0.2); border-radius: 10px; display: flex; align-items: center; justify-content: center;">
@@ -267,7 +267,7 @@ function createNotificationElements() {
                         <i class="far fa-clock" style="color: #95a5a6; font-size: 12px;"></i>
                         <span style="color: #7f8c8d; font-size: 12px;">Last checked: <span id="lastNotificationCheck">Never</span></span>
                     </div>
-                    <button class="view-all-notifications" style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); border: none; color: white; padding: 8px 16px; border-radius: 20px; font-size: 12px; font-weight: 600; cursor: pointer; display: flex; align-items: center; gap: 6px; transition: all 0.2s;">
+                    <button class="view-all-notifications" style="background: linear-gradient(135deg, #090174 0%, #090174 100%); border: none; color: white; padding: 8px 16px; border-radius: 20px; font-size: 12px; font-weight: 600; cursor: pointer; display: flex; align-items: center; gap: 6px; transition: all 0.2s;">
                         <i class="fas fa-eye"></i> View All
                     </button>
                 </div>

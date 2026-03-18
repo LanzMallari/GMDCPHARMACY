@@ -211,7 +211,7 @@ function createNotificationElements() {
     
     notificationContainer.innerHTML = `
         <div class="notification-wrapper" style="position: relative; cursor: pointer;">
-            <div class="notification-icon" style="width: 45px; height: 45px; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); border-radius: 12px; display: flex; align-items: center; justify-content: center; transition: all 0.3s ease; box-shadow: 0 4px 15px rgba(102, 126, 234, 0.3);">
+            <div class="notification-icon" style="width: 45px; height: 45px; background: linear-gradient(135deg, #090174 0%, #090174 100%); border-radius: 12px; display: flex; align-items: center; justify-content: center; transition: all 0.3s ease; box-shadow: 0 4px 15px rgba(102, 126, 234, 0.3);">
                 <i class="fas fa-bell" style="color: white; font-size: 20px;"></i>
             </div>
             <span class="badge" style="position: absolute; top: -8px; right: -8px; background: #e74c3c; color: white; font-size: 12px; padding: 4px 8px; border-radius: 20px; min-width: 24px; text-align: center; font-weight: 600; border: 2px solid white; display: none; box-shadow: 0 2px 5px rgba(0,0,0,0.2);">0</span>
@@ -253,7 +253,7 @@ function createNotificationElements() {
         `;
         
         popup.innerHTML = `
-            <div class="notification-popup-header" style="padding: 20px; border-bottom: 1px solid #eef2f6; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);">
+            <div class="notification-popup-header" style="padding: 20px; border-bottom: 1px solid #eef2f6; background: #090174">
                 <div style="display: flex; justify-content: space-between; align-items: center;">
                     <div style="display: flex; align-items: center; gap: 12px;">
                         <div style="width: 40px; height: 40px; background: rgba(255,255,255,0.2); border-radius: 10px; display: flex; align-items: center; justify-content: center;">
@@ -286,7 +286,7 @@ function createNotificationElements() {
                         <i class="far fa-clock" style="color: #95a5a6; font-size: 12px;"></i>
                         <span style="color: #7f8c8d; font-size: 12px;">Last checked: <span id="lastNotificationCheck">Never</span></span>
                     </div>
-                    <button class="view-all-notifications" style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); border: none; color: white; padding: 8px 16px; border-radius: 20px; font-size: 12px; font-weight: 600; cursor: pointer; display: flex; align-items: center; gap: 6px; transition: all 0.2s;">
+                    <button class="view-all-notifications" style="background: linear-gradient(135deg, #090174 0%, #090174 100%); border: none; color: white; padding: 8px 16px; border-radius: 20px; font-size: 12px; font-weight: 600; cursor: pointer; display: flex; align-items: center; gap: 6px; transition: all 0.2s;">
                         <i class="fas fa-eye"></i> View All
                     </button>
                 </div>
