@@ -1399,6 +1399,7 @@ td {
     display: flex;
     align-items: center;
     gap: 15px;
+padding-left: 90%;
 }
 
 .burger-btn {
@@ -9429,4 +9430,83 @@ td, tr, tbody, table {
     padding: 2px 6px;
     border-radius: 4px;
     margin-left: 5px;
+}.discount-options {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    padding: 15px;
+    background: #f8f9fa;
+    border-radius: 12px;
+    margin-bottom: 15px;
+}
+
+.discount-option {
+    display: flex;
+    align-items: center;
+    padding: 12px 15px;
+    background: white;
+    border: 2px solid #e9ecef;
+    border-radius: 10px;
+    cursor: pointer;
+    transition: all 0.2s ease;
+}
+
+.discount-option:hover {
+    border-color: #3498db;
+    transform: translateY(-2px);
+    box-shadow: 0 4px 10px rgba(0,0,0,0.05);
+}
+
+.discount-option input[type="radio"] {
+    width: 18px;
+    height: 18px;
+    margin-right: 12px;
+    cursor: pointer;
+    accent-color: #3498db;
+}
+
+.discount-option-label {
+    font-size: 14px;
+    font-weight: 500;
+    color: #2c3e50;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.discount-option-label i {
+    color: #3498db;
+    font-size: 16px;
+}
+
+.discount-info-badge {
+    padding: 12px 15px;
+    border-radius: 10px;
+    font-size: 14px;
+    font-weight: 500;
+    margin-bottom: 15px;
+    animation: slideIn 0.3s ease;
+}
+
+.discount-info-badge.seniorPWD {
+    background: linear-gradient(135deg, #e8f4fd 0%, #d4e6f1 100%);
+    color: #2874a6;
+    border-left: 4px solid #3498db;
+}
+
+.discount-info-badge.yakap {
+    background: linear-gradient(135deg, #fef9e7 0%, #fef5e7 100%);
+    color: #b85e00;
+    border-left: 4px solid #f39c12;
+}
+
+@keyframes slideIn {
+    from {
+        opacity: 0;
+        transform: translateY(-10px);
+    }
+    to {
+        opacity: 1;
+        transform: translateY(0);
+    }
 }

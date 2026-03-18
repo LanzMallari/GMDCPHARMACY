@@ -312,7 +312,7 @@ async function loadSalesHistory(sortOrder = 'desc') {
                 exchangeBadge = '<span class="exchange-expired"><i class="fas fa-lock"></i> Exchange Closed</span>';
             }
             
-            // Discount badge based on discount type
+            // Discount badge based on discount type and prescription status
             let discountBadge = '';
             if (sale.discountType) {
                 if (sale.discountType === 'seniorPWD') {
@@ -322,17 +322,35 @@ async function loadSalesHistory(sortOrder = 'desc') {
                 }
             }
             
+            // Prescription verification badge
+            let prescriptionBadge = '';
+            if (sale.prescriptionVerified) {
+                prescriptionBadge = '<span class="prescription-verified-badge"><i class="fas fa-prescription"></i> Rx Verified</span>';
+            } else if (sale.hadPrescriptionRequiredItems) {
+                prescriptionBadge = '<span class="prescription-unverified-badge"><i class="fas fa-exclamation-circle"></i> Rx Required (No Discount)</span>';
+            }
+            
             // Only show expiring badge if the sale actually had expiring items
             const hadExpiring = sale.hadExpiringItems ? 
                 '<span class="expiring-sale-badge"><i class="fas fa-clock"></i> Had Expiring</span>' : '';
             
+            // Calculate discount amount if available
+            let discountInfo = '';
+            if (sale.discountAmount && sale.discountAmount > 0) {
+                discountInfo = `<span class="discount-amount-badge">-₱${sale.discountAmount.toFixed(2)}</span>`;
+            }
+            
             const row = document.createElement('tr');
             row.innerHTML = `
                 <td>
-                    <span class="invoice-badge">${sale.invoiceNumber || `#${doc.id.slice(-8)}`}</span> 
-                    ${exchangeBadge}
-                    ${hadExpiring}
-                    ${discountBadge}
+                    <div class="invoice-cell">
+                        <span class="invoice-badge">${sale.invoiceNumber || `#${doc.id.slice(-8)}`}</span>
+                        ${discountInfo}
+                        ${discountBadge}
+                        ${prescriptionBadge}
+                        ${hadExpiring}
+                        ${exchangeBadge}
+                    </div>
                 </td>
                 <td>${formatDate(sale.date)}</td>
                 <td>
@@ -340,18 +358,51 @@ async function loadSalesHistory(sortOrder = 'desc') {
                         ${sale.items?.map(item => {
                             const displayName = item.brand || item.name || 'Unknown';
                             const genericDisplay = item.generic ? ` (${item.generic})` : '';
+                            
+                            // Show discount status per item
+                            let itemDiscountStatus = '';
+                            if (item.discountable === false) {
+                                itemDiscountStatus = ' <span class="item-no-discount">🚫 No Discount</span>';
+                            } else if (item.prescriptionRequired && !sale.prescriptionVerified) {
+                                itemDiscountStatus = ' <span class="item-rx-required">📋 Rx Required</span>';
+                            } else if (sale.discountType !== 'none') {
+                                itemDiscountStatus = ` <span class="item-discounted">💰 ${sale.discountRate}% off</span>`;
+                            }
+                            
                             const expiringBadge = item.wasExpiring ? 
                                 '<span class="item-expiring-badge-list" title="This item was expiring soon when sold">⚠️ EXPIRING</span>' : '';
+                            
+                            // Show original and discounted price
+                            const originalPrice = (item.price * item.quantity).toFixed(2);
+                            const discountedPrice = item.discountAmount > 0 ? 
+                                (item.price * item.quantity - item.discountAmount).toFixed(2) : originalPrice;
+                            
+                            let priceDisplay = '';
+                            if (item.discountAmount > 0) {
+                                priceDisplay = `<span class="item-price-original">₱${originalPrice}</span> → <span class="item-price-discounted">₱${discountedPrice}</span>`;
+                            } else {
+                                priceDisplay = `<span class="item-price">₱${originalPrice}</span>`;
+                            }
+                            
                             return `
-                                <div class="item-name">
-                                    ${displayName}${genericDisplay} x${item.quantity}
-                                    ${expiringBadge}
+                                <div class="item-row-detail">
+                                    <span class="item-name-detail">
+                                        ${displayName}${genericDisplay} x${item.quantity}
+                                        ${itemDiscountStatus}
+                                        ${expiringBadge}
+                                    </span>
+                                    <span class="item-price-detail">${priceDisplay}</span>
                                 </div>
                             `;
                         }).join('') || 'No items'}
                     </div>
                 </td>
-                <td>₱${(sale.total || 0).toFixed(2)}</td>
+                <td>
+                    <div class="total-cell">
+                        <span class="total-amount">₱${(sale.total || 0).toFixed(2)}</span>
+                        ${sale.discountPercentage > 0 ? `<span class="discount-percent">${sale.discountPercentage}% off</span>` : ''}
+                    </div>
+                </td>
                 <td><span class="payment-method">${sale.paymentMethod || 'N/A'}</span></td>
                 <td><span class="cashier-name">${sale.cashierName || 'Unknown'}</span></td>
                 <td>
@@ -767,10 +818,22 @@ function addEnhancedExchangeStyles() {
             padding: 15px;
             border-bottom: 1px solid #f0f0f0;
             cursor: pointer;
+            transition: background 0.2s;
         }
         
         .search-result-item:hover {
             background: #f8f9fa;
+        }
+        
+        .result-info h4 {
+            margin: 0 0 5px 0;
+            color: #2c3e50;
+        }
+        
+        .result-info p {
+            margin: 0;
+            font-size: 12px;
+            color: #7f8c8d;
         }
         
         .result-badge {
@@ -795,6 +858,16 @@ function addEnhancedExchangeStyles() {
             margin-bottom: 8px;
         }
         
+        .selected-sale-row .label {
+            font-weight: 600;
+            color: #7f8c8d;
+        }
+        
+        .selected-sale-row .value {
+            color: #2c3e50;
+            font-weight: 500;
+        }
+        
         .original-items-grid {
             display: grid;
             grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
@@ -807,15 +880,29 @@ function addEnhancedExchangeStyles() {
             border-radius: 8px;
             padding: 15px;
             cursor: pointer;
+            transition: all 0.2s;
         }
         
         .original-item-card:hover {
             border-color: #667eea;
+            transform: translateY(-2px);
+            box-shadow: 0 4px 10px rgba(0,0,0,0.1);
         }
         
         .original-item-card.selected {
             border: 2px solid #667eea;
             background: #f0f7ff;
+        }
+        
+        .original-item-card h4 {
+            margin: 0 0 10px 0;
+            color: #2c3e50;
+        }
+        
+        .item-meta {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
         }
         
         .available-badge {
@@ -832,6 +919,18 @@ function addEnhancedExchangeStyles() {
             gap: 20px;
             align-items: center;
             margin-bottom: 20px;
+        }
+        
+        .original-product-box, .new-product-box {
+            background: #f8f9fa;
+            border-radius: 10px;
+            padding: 20px;
+        }
+        
+        .original-product-box h4, .new-product-box h4 {
+            margin: 0 0 15px 0;
+            color: #333;
+            text-align: center;
         }
         
         .exchange-arrow {
@@ -941,12 +1040,35 @@ function addEnhancedExchangeStyles() {
             margin-bottom: 8px;
         }
         
+        .confirmation-row .label {
+            color: #7f8c8d;
+        }
+        
+        .confirmation-row .value {
+            font-weight: 500;
+            color: #2c3e50;
+        }
+        
         .confirmation-row.total {
             margin-top: 10px;
             padding-top: 10px;
             border-top: 2px solid #ddd;
             font-size: 16px;
             font-weight: bold;
+        }
+        
+        .confirmation-row.total .value {
+            color: #27ae60;
+        }
+        
+        .confirmation-row.total .value.positive {
+            color: #e74c3c;
+        }
+        
+        .step-actions {
+            display: flex;
+            justify-content: space-between;
+            margin-top: 20px;
         }
         
         .btn-success {
@@ -958,6 +1080,12 @@ function addEnhancedExchangeStyles() {
             font-size: 16px;
             font-weight: 600;
             cursor: pointer;
+            transition: all 0.2s;
+        }
+        
+        .btn-success:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 4px 15px rgba(76, 175, 80, 0.3);
         }
         
         @media (max-width: 768px) {
@@ -1054,7 +1182,8 @@ async function searchSalesEnhanced(searchTerm) {
                 }, {}) || {};
                 
                 hasAvailableItems = sale.items.some(item => {
-                    const exchanged = exchangedQuantities[item.productId] || 0;
+                    const productId = item.productId || item.id;
+                    const exchanged = exchangedQuantities[productId] || 0;
                     return (item.quantity - exchanged) > 0;
                 });
             }
@@ -1069,22 +1198,23 @@ async function searchSalesEnhanced(searchTerm) {
             sale.items?.forEach(item => {
                 const brand = (item.brand || '').toLowerCase();
                 const name = (item.name || '').toLowerCase();
-                if (brand.includes(searchTerm) || name.includes(searchTerm)) {
-                    results.push({ id: doc.id, ...sale });
+                if (brand.includes(searchTerm.toLowerCase()) || name.includes(searchTerm.toLowerCase())) {
+                    if (!results.some(r => r.id === doc.id)) {
+                        results.push({ id: doc.id, ...sale });
+                    }
                 }
             });
         });
         
-        const uniqueResults = Array.from(new Map(results.map(r => [r.id, r])).values());
-        resultsCount.textContent = uniqueResults.length;
+        resultsCount.textContent = results.length;
         
-        if (uniqueResults.length === 0) {
+        if (results.length === 0) {
             resultsDiv.innerHTML = '<div style="text-align: center; padding: 20px; color: #7f8c8d;">No eligible sales found</div>';
             return;
         }
         
         resultsDiv.innerHTML = '';
-        uniqueResults.forEach(sale => {
+        results.forEach(sale => {
             const resultDiv = document.createElement('div');
             resultDiv.className = 'search-result-item';
             resultDiv.innerHTML = `
@@ -1109,8 +1239,9 @@ async function selectSaleEnhanced(saleId, saleData) {
         const modal = document.getElementById('enhancedExchangeModal');
         modal.dataset.saleId = saleId;
         
-        updateProgressStep(1, true);
-        updateProgressStep(2, true);
+        // Update progress
+        document.getElementById('progressStep1').classList.add('completed');
+        document.getElementById('progressStep2').classList.add('active');
         
         const selectedSaleCard = document.getElementById('selectedSaleCard');
         selectedSaleCard.innerHTML = `
@@ -1192,7 +1323,7 @@ async function loadOriginalItemsEnhanced(saleId, saleData) {
             itemCard.innerHTML = `
                 <h4>${productName}${genericText ? ` (${genericText})` : ''}</h4>
                 <div class="item-meta">
-                    <span>Price: ₱${price.toFixed(2)}</span>
+                    <span>₱${price.toFixed(2)} each</span>
                     <span class="available-badge">Available: ${availableQty}</span>
                 </div>
             `;
@@ -1232,8 +1363,8 @@ function selectOriginalItemEnhanced(itemCard) {
     
     loadReplacementProductsEnhanced();
     
-    updateProgressStep(2, true);
-    updateProgressStep(3, true);
+    document.getElementById('progressStep2').classList.add('completed');
+    document.getElementById('progressStep3').classList.add('active');
     
     goToExchangeStep(3);
 }
@@ -1521,8 +1652,8 @@ function showExchangeReview() {
         ` : ''}
     `;
     
-    updateProgressStep(3, true);
-    updateProgressStep(4, true);
+    document.getElementById('progressStep3').classList.add('completed');
+    document.getElementById('progressStep4').classList.add('active');
     
     goToExchangeStep(4);
 }
@@ -1775,7 +1906,7 @@ async function processEnhancedExchange() {
         // Commit all changes
         await batch.commit();
         
-        showNotification(`Exchange processed successfully! ${returnedCount} items returned to stock.`, 'success');
+        showNotification(`Exchange processed successfully!`, 'success');
         
         // Close modal and refresh
         closeModal('enhancedExchangeModal');
@@ -1945,6 +2076,14 @@ async function viewSaleDetails(saleId) {
             }
         }
         
+        // Prescription verification display
+        let prescriptionInfo = '';
+        if (sale.prescriptionVerified) {
+            prescriptionInfo = '<p class="prescription-info verified"><i class="fas fa-prescription"></i> Prescription Verified</p>';
+        } else if (sale.hadPrescriptionRequiredItems) {
+            prescriptionInfo = '<p class="prescription-info unverified"><i class="fas fa-exclamation-circle"></i> Prescription Required Items (No Discount)</p>';
+        }
+        
         let itemsHtml = '';
         if (sale.items) {
             sale.items.forEach(item => {
@@ -1953,17 +2092,55 @@ async function viewSaleDetails(saleId) {
                 const exchangedDisplay = item.exchangedQuantity ? 
                     `<span class="exchanged-badge">Exchanged: ${item.exchangedQuantity}</span>` : '';
                 
+                // Show discount status per item
+                let discountStatus = '';
+                if (item.discountable === false) {
+                    discountStatus = '<span class="item-no-discount-badge">No Discount</span>';
+                } else if (item.prescriptionRequired && !sale.prescriptionVerified) {
+                    discountStatus = '<span class="item-rx-required-badge">Rx Required</span>';
+                } else if (sale.discountType !== 'none') {
+                    discountStatus = `<span class="item-discounted-badge">${sale.discountRate}% off</span>`;
+                }
+                
                 // Show expiring badge at item level
                 const expiringBadge = item.wasExpiring ? 
                     '<span class="item-expiring-badge-detail"><i class="fas fa-clock"></i> Expiring</span>' : '';
                 
+                // Show price breakdown
+                const originalPrice = (item.price * item.quantity).toFixed(2);
+                const discountedPrice = item.discountAmount > 0 ? 
+                    (item.price * item.quantity - item.discountAmount).toFixed(2) : originalPrice;
+                
+                let priceDisplay = '';
+                if (item.discountAmount > 0) {
+                    priceDisplay = `
+                        <div class="price-breakdown">
+                            <span class="original-price">₱${originalPrice}</span>
+                            <span class="discount-arrow">→</span>
+                            <span class="discounted-price">₱${discountedPrice}</span>
+                            <span class="discount-saved">(-₱${item.discountAmount.toFixed(2)})</span>
+                        </div>
+                    `;
+                } else {
+                    priceDisplay = `<span class="regular-price">₱${originalPrice}</span>`;
+                }
+                
                 itemsHtml += `
                     <div class="item-row ${item.wasExpiring ? 'expiring-item-row' : ''}">
                         <div class="item-info">
-                            <div class="item-name">${displayName} ${genericDisplay} ${exchangedDisplay} ${expiringBadge}</div>
-                            <div class="item-meta">Qty: ${item.quantity}</div>
+                            <div class="item-name-group">
+                                <span class="item-name">${displayName} ${genericDisplay}</span>
+                                <div class="item-badges">
+                                    ${discountStatus}
+                                    ${exchangedDisplay}
+                                    ${expiringBadge}
+                                </div>
+                            </div>
+                            <div class="item-meta">Quantity: ${item.quantity} × ₱${item.price.toFixed(2)}</div>
                         </div>
-                        <div class="item-price">₱${(item.price * item.quantity).toFixed(2)}</div>
+                        <div class="item-price-group">
+                            ${priceDisplay}
+                        </div>
                     </div>
                 `;
             });
@@ -1973,10 +2150,11 @@ async function viewSaleDetails(saleId) {
         if (sale.exchanges && sale.exchanges.length > 0) {
             exchangesHtml = `<div class="exchange-card"><h3>Exchange History</h3>`;
             sale.exchanges.forEach(ex => {
+                const diffClass = ex.priceDifference > 0 ? 'positive' : (ex.priceDifference < 0 ? 'negative' : '');
                 exchangesHtml += `
                     <div class="exchange-item">
                         <p><strong>${ex.originalProduct} → ${ex.newProduct}</strong> x${ex.quantity}</p>
-                        <p>Difference: ₱${ex.priceDifference.toFixed(2)}</p>
+                        <p class="${diffClass}">Difference: ${ex.priceDifference > 0 ? '+' : ''}₱${ex.priceDifference.toFixed(2)}</p>
                         <small>${formatDate(ex.date)}</small>
                     </div>
                 `;
@@ -1984,21 +2162,40 @@ async function viewSaleDetails(saleId) {
             exchangesHtml += `</div>`;
         }
         
+        // Calculate totals breakdown
+        const subtotal = sale.subtotal || 0;
+        const discountAmount = sale.discountAmount || 0;
+        const total = sale.total || 0;
+        
         panelBody.innerHTML = `
             <div class="invoice-card">
                 <h3>${sale.invoiceNumber || 'N/A'}</h3>
-                <p>Date: ${formattedDate}</p>
-                <p>Cashier: ${sale.cashierName || 'Unknown'}</p>
+                <p><i class="far fa-calendar"></i> ${formattedDate}</p>
+                <p><i class="fas fa-user"></i> Cashier: ${sale.cashierName || 'Unknown'}</p>
+                <p><i class="fas fa-credit-card"></i> Payment: ${sale.paymentMethod || 'N/A'}</p>
                 ${discountInfo}
+                ${prescriptionInfo}
             </div>
             <div class="items-card">
-                <h4>Items</h4>
+                <h4><i class="fas fa-boxes"></i> Items</h4>
                 ${itemsHtml}
             </div>
             <div class="summary-card">
-                <p>Subtotal: ₱${sale.subtotal?.toFixed(2) || '0.00'}</p>
-                ${sale.discountPercentage > 0 ? `<p>Discount: -₱${sale.discountAmount?.toFixed(2) || '0.00'}</p>` : ''}
-                <h4>Total: ₱${sale.total?.toFixed(2) || '0.00'}</h4>
+                <h4><i class="fas fa-calculator"></i> Summary</h4>
+                <div class="summary-row">
+                    <span>Subtotal:</span>
+                    <span>₱${subtotal.toFixed(2)}</span>
+                </div>
+                ${sale.discountPercentage > 0 ? `
+                <div class="summary-row discount">
+                    <span>Discount (${sale.discountPercentage}%):</span>
+                    <span>-₱${discountAmount.toFixed(2)}</span>
+                </div>
+                ` : ''}
+                <div class="summary-row total">
+                    <span>Total:</span>
+                    <span>₱${total.toFixed(2)}</span>
+                </div>
             </div>
             ${exchangesHtml}
             <div class="modal-footer">
@@ -2081,7 +2278,7 @@ if (salesDateFilter) {
                 const sale = doc.data();
                 const withinWindow = isWithinExchangeWindow(sale.date);
                 
-                // Discount badge based on discount type
+                // Discount badge based on discount type and prescription status
                 let discountBadge = '';
                 if (sale.discountType) {
                     if (sale.discountType === 'seniorPWD') {
@@ -2091,16 +2288,34 @@ if (salesDateFilter) {
                     }
                 }
                 
+                // Prescription verification badge
+                let prescriptionBadge = '';
+                if (sale.prescriptionVerified) {
+                    prescriptionBadge = '<span class="prescription-verified-badge"><i class="fas fa-prescription"></i> Rx Verified</span>';
+                } else if (sale.hadPrescriptionRequiredItems) {
+                    prescriptionBadge = '<span class="prescription-unverified-badge"><i class="fas fa-exclamation-circle"></i> Rx Required (No Discount)</span>';
+                }
+                
                 // Only show expiring badge if the sale actually had expiring items
                 const hadExpiring = sale.hadExpiringItems ? 
                     '<span class="expiring-sale-badge"><i class="fas fa-clock"></i> Had Expiring</span>' : '';
                 
+                // Calculate discount amount if available
+                let discountInfo = '';
+                if (sale.discountAmount && sale.discountAmount > 0) {
+                    discountInfo = `<span class="discount-amount-badge">-₱${sale.discountAmount.toFixed(2)}</span>`;
+                }
+                
                 const row = document.createElement('tr');
                 row.innerHTML = `
                     <td>
-                        <span class="invoice-badge">${sale.invoiceNumber || `#${doc.id.slice(-8)}`}</span>
-                        ${hadExpiring}
-                        ${discountBadge}
+                        <div class="invoice-cell">
+                            <span class="invoice-badge">${sale.invoiceNumber || `#${doc.id.slice(-8)}`}</span>
+                            ${discountInfo}
+                            ${discountBadge}
+                            ${prescriptionBadge}
+                            ${hadExpiring}
+                        </div>
                     </td>
                     <td>${formatDate(sale.date)}</td>
                     <td>${sale.items?.length || 0} items</td>
@@ -2212,3 +2427,347 @@ window.openExchangeModal = openExchangeModal;
 window.closeModal = closeModal;
 window.goToExchangeStep = goToExchangeStep;
 window.printSaleDetails = printSaleDetails;
+
+// Add CSS for new discount displays
+const style = document.createElement('style');
+style.textContent = `
+    .invoice-cell {
+        display: flex;
+        flex-direction: column;
+        gap: 4px;
+    }
+    
+    .discount-badge {
+        display: inline-flex;
+        align-items: center;
+        gap: 4px;
+        padding: 2px 8px;
+        border-radius: 12px;
+        font-size: 10px;
+        font-weight: 600;
+        margin-right: 4px;
+    }
+    
+    .discount-badge.senior-pwd {
+        background: #e8f4fd;
+        color: #2874a6;
+    }
+    
+    .discount-badge.yakap {
+        background: #fef9e7;
+        color: #b85e00;
+    }
+    
+    .discount-amount-badge {
+        background: #27ae60;
+        color: white;
+        padding: 2px 6px;
+        border-radius: 4px;
+        font-size: 10px;
+        font-weight: 600;
+    }
+    
+    .prescription-verified-badge {
+        display: inline-flex;
+        align-items: center;
+        gap: 4px;
+        background: #d4edda;
+        color: #155724;
+        padding: 2px 8px;
+        border-radius: 12px;
+        font-size: 10px;
+        font-weight: 600;
+    }
+    
+    .prescription-unverified-badge {
+        display: inline-flex;
+        align-items: center;
+        gap: 4px;
+        background: #fff3cd;
+        color: #856404;
+        padding: 2px 8px;
+        border-radius: 12px;
+        font-size: 10px;
+        font-weight: 600;
+    }
+    
+    .item-row-detail {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        padding: 4px 0;
+        border-bottom: 1px dashed #e0e0e0;
+    }
+    
+    .item-name-detail {
+        font-size: 12px;
+        color: #2c3e50;
+    }
+    
+    .item-no-discount {
+        background: #fed7d7;
+        color: #742a2a;
+        padding: 2px 4px;
+        border-radius: 4px;
+        font-size: 9px;
+        margin-left: 4px;
+    }
+    
+    .item-rx-required {
+        background: #fff3cd;
+        color: #856404;
+        padding: 2px 4px;
+        border-radius: 4px;
+        font-size: 9px;
+        margin-left: 4px;
+    }
+    
+    .item-discounted {
+        background: #d4edda;
+        color: #155724;
+        padding: 2px 4px;
+        border-radius: 4px;
+        font-size: 9px;
+        margin-left: 4px;
+    }
+    
+    .item-price-detail {
+        font-size: 12px;
+        font-weight: 600;
+    }
+    
+    .item-price-original {
+        color: #7f8c8d;
+        text-decoration: line-through;
+        font-size: 11px;
+        margin-right: 4px;
+    }
+    
+    .item-price-discounted {
+        color: #27ae60;
+    }
+    
+    .total-cell {
+        display: flex;
+        flex-direction: column;
+        align-items: flex-end;
+    }
+    
+    .discount-percent {
+        font-size: 10px;
+        color: #27ae60;
+        background: #e8f8f5;
+        padding: 2px 6px;
+        border-radius: 4px;
+        margin-top: 2px;
+    }
+    
+    /* Sale Details Modal Styles */
+    .invoice-card {
+        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        color: white;
+        padding: 20px;
+        border-radius: 12px;
+        margin-bottom: 20px;
+    }
+    
+    .invoice-card h3 {
+        margin: 0 0 10px 0;
+        font-size: 18px;
+    }
+    
+    .invoice-card p {
+        margin: 5px 0;
+        opacity: 0.9;
+    }
+    
+    .invoice-card i {
+        margin-right: 8px;
+    }
+    
+    .discount-info, .prescription-info {
+        margin: 10px 0 0 0;
+        padding: 8px;
+        border-radius: 6px;
+        background: rgba(255,255,255,0.2);
+    }
+    
+    .prescription-info.verified {
+        background: rgba(46, 204, 113, 0.3);
+    }
+    
+    .prescription-info.unverified {
+        background: rgba(241, 176, 58, 0.3);
+    }
+    
+    .items-card {
+        background: white;
+        border-radius: 12px;
+        padding: 20px;
+        margin-bottom: 20px;
+        box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+    }
+    
+    .item-row {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        padding: 15px 0;
+        border-bottom: 1px solid #eef2f6;
+    }
+    
+    .item-row:last-child {
+        border-bottom: none;
+    }
+    
+    .item-name-group {
+        display: flex;
+        align-items: center;
+        flex-wrap: wrap;
+        gap: 8px;
+        margin-bottom: 4px;
+    }
+    
+    .item-badges {
+        display: flex;
+        gap: 4px;
+    }
+    
+    .item-no-discount-badge, .item-rx-required-badge, .item-discounted-badge {
+        padding: 2px 8px;
+        border-radius: 12px;
+        font-size: 9px;
+        font-weight: 600;
+    }
+    
+    .item-no-discount-badge {
+        background: #fed7d7;
+        color: #742a2a;
+    }
+    
+    .item-rx-required-badge {
+        background: #fff3cd;
+        color: #856404;
+    }
+    
+    .item-discounted-badge {
+        background: #d4edda;
+        color: #155724;
+    }
+    
+    .item-expiring-badge-detail {
+        background: #f39c12;
+        color: white;
+        padding: 2px 8px;
+        border-radius: 12px;
+        font-size: 9px;
+    }
+    
+    .expiring-item-row {
+        background: #fef9e7;
+    }
+    
+    .price-breakdown {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+    }
+    
+    .original-price {
+        color: #7f8c8d;
+        text-decoration: line-through;
+        font-size: 12px;
+    }
+    
+    .discount-arrow {
+        color: #95a5a6;
+        font-size: 12px;
+    }
+    
+    .discounted-price {
+        color: #27ae60;
+        font-weight: 600;
+    }
+    
+    .discount-saved {
+        color: #e74c3c;
+        font-size: 10px;
+    }
+    
+    .summary-card {
+        background: #f8f9fa;
+        border-radius: 12px;
+        padding: 20px;
+        margin-bottom: 20px;
+    }
+    
+    .summary-row {
+        display: flex;
+        justify-content: space-between;
+        margin-bottom: 10px;
+    }
+    
+    .summary-row.discount {
+        color: #27ae60;
+    }
+    
+    .summary-row.total {
+        margin-top: 10px;
+        padding-top: 10px;
+        border-top: 2px solid #ddd;
+        font-size: 18px;
+        font-weight: bold;
+    }
+    
+    .exchange-card {
+        background: white;
+        border-radius: 12px;
+        padding: 20px;
+        margin-bottom: 20px;
+        border-left: 4px solid #f39c12;
+    }
+    
+    .exchange-item {
+        background: #f8f9fa;
+        border-radius: 8px;
+        padding: 12px;
+        margin-bottom: 10px;
+    }
+    
+    .exchange-item p {
+        margin: 5px 0;
+    }
+    
+    .exchange-item .positive {
+        color: #e74c3c;
+    }
+    
+    .exchange-item .negative {
+        color: #27ae60;
+    }
+    
+    .modal-footer {
+        display: flex;
+        justify-content: flex-end;
+        gap: 10px;
+        padding-top: 20px;
+        border-top: 1px solid #eef2f6;
+    }
+    
+    @media (max-width: 768px) {
+        .item-row {
+            flex-direction: column;
+            align-items: flex-start;
+        }
+        
+        .item-price-group {
+            margin-top: 10px;
+            align-self: flex-end;
+        }
+        
+        .price-breakdown {
+            flex-wrap: wrap;
+        }
+    }
+`;
+document.head.appendChild(style);

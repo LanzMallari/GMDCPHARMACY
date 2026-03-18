@@ -194,7 +194,7 @@ function createNotificationElements() {
     
     notificationContainer.innerHTML = `
         <div class="notification-wrapper" style="position: relative; cursor: pointer;">
-            <div class="notification-icon" style="width: 45px; height: 45px; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); border-radius: 12px; display: flex; align-items: center; justify-content: center; transition: all 0.3s ease; box-shadow: 0 4px 15px rgba(102, 126, 234, 0.3);">
+            <div class="notification-icon" style="width: 45px; height: 45px; background: linear-gradient(135deg, #02187c 0%, #02006d 100%); border-radius: 12px; display: flex; align-items: center; justify-content: center; transition: all 0.3s ease; box-shadow: 0 4px 15px rgba(102, 126, 234, 0.3);">
                 <i class="fas fa-bell" style="color: white; font-size: 20px;"></i>
             </div>
             <span class="badge" style="position: absolute; top: -8px; right: -8px; background: #e74c3c; color: white; font-size: 12px; padding: 4px 8px; border-radius: 20px; min-width: 24px; text-align: center; font-weight: 600; border: 2px solid white; display: none; box-shadow: 0 2px 5px rgba(0,0,0,0.2);">0</span>
@@ -633,7 +633,7 @@ async function loadNotificationDetails() {
                     <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; padding: 0 5px;">
                         <div style="display: flex; align-items: center; gap: 8px;">
                             <div style="width: 8px; height: 8px; background: #3498db; border-radius: 50%;"></div>
-                            <h4 style="margin: 0; font-size: 14px; color: #3498db; font-weight: 600;">Low Stock Alert</h4>
+                            <h4 style="margin: 0; font-size: 14px; color: #7434db; font-weight: 600;">Low Stock Alert</h4>
                         </div>
                         <span style="background: #e8f4fd; color: #3498db; padding: 4px 10px; border-radius: 20px; font-size: 11px; font-weight: 600;">${data.lowStockProducts.length} items</span>
                     </div>
@@ -641,10 +641,10 @@ async function loadNotificationDetails() {
             
             data.lowStockProducts.forEach(product => {
                 const percentRemaining = Math.round((product.stock / product.threshold) * 100);
-                const barColor = percentRemaining < 20 ? '#e74c3c' : (percentRemaining < 50 ? '#f39c12' : '#3498db');
+                const barColor = percentRemaining < 20 ? '#e74c3c' : (percentRemaining < 50 ? '#f39c12' : '#0a0096');
                 
                 html += `
-                    <div class="notification-item low-stock" style="background: #e8f4fd; border-left: 4px solid #3498db; border-radius: 10px; padding: 15px; margin-bottom: 8px; cursor: pointer;" onclick="window.location.href='inventory.html'">
+                    <div class="notification-item low-stock" style="background: #e8f4fd; border-left: 4px solid #0f0194; border-radius: 10px; padding: 15px; margin-bottom: 8px; cursor: pointer;" onclick="window.location.href='inventory.html'">
                         <div style="display: flex; align-items: flex-start; gap: 12px;">
                             <div style="width: 36px; height: 36px; background: rgba(52, 152, 219, 0.1); border-radius: 8px; display: flex; align-items: center; justify-content: center;">
                                 <i class="fas fa-boxes" style="color: #3498db; font-size: 16px;"></i>

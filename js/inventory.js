@@ -26,7 +26,7 @@ document.addEventListener('DOMContentLoaded', () => {
     initializeInventory();
     setupEventListeners();
     initializeNotifications();
-    setupCategoryListener(); // New function to listen for category changes
+    setupCategoryListener();
 });
 
 async function initializeInventory() {
@@ -120,7 +120,6 @@ function createNotificationElements() {
     const notificationContainer = document.querySelector('.notification');
     if (!notificationContainer) return;
     
-    // Redesign notification logo
     notificationContainer.innerHTML = `
         <div class="notification-wrapper" style="position: relative; cursor: pointer;">
             <div class="notification-icon" style="width: 45px; height: 45px; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); border-radius: 12px; display: flex; align-items: center; justify-content: center; transition: all 0.3s ease; box-shadow: 0 4px 15px rgba(102, 126, 234, 0.3);">
@@ -132,7 +131,6 @@ function createNotificationElements() {
     
     notificationBadge = notificationContainer.querySelector('.badge');
     
-    // Add hover effect
     const notificationIcon = notificationContainer.querySelector('.notification-icon');
     notificationIcon.addEventListener('mouseenter', () => {
         notificationIcon.style.transform = 'scale(1.05)';
@@ -144,7 +142,6 @@ function createNotificationElements() {
         notificationIcon.style.boxShadow = '0 4px 15px rgba(102, 126, 234, 0.3)';
     });
     
-    // Create notification popup
     if (!document.getElementById('notificationPopup')) {
         const popup = document.createElement('div');
         popup.id = 'notificationPopup';
@@ -208,7 +205,6 @@ function createNotificationElements() {
         notificationContainer.style.position = 'relative';
         notificationContainer.appendChild(popup);
         
-        // Add animation keyframes
         const style = document.createElement('style');
         style.textContent = `
             @keyframes slideDown {
@@ -276,32 +272,27 @@ function createNotificationElements() {
         `;
         document.head.appendChild(style);
         
-        // Toggle popup on click
         notificationContainer.addEventListener('click', (e) => {
             e.stopPropagation();
             toggleNotificationPopup();
         });
         
-        // Close button
         popup.querySelector('.notification-close-btn').addEventListener('click', (e) => {
             e.stopPropagation();
             hideNotificationPopup();
             lastPopupDismissed = Date.now();
         });
         
-        // Refresh button
         popup.querySelector('.notification-refresh-btn').addEventListener('click', (e) => {
             e.stopPropagation();
             checkNotifications(true);
         });
         
-        // View all button
         popup.querySelector('.view-all-notifications').addEventListener('click', (e) => {
             e.stopPropagation();
             window.location.href = 'reports.html';
         });
         
-        // Close popup when clicking outside
         document.addEventListener('click', (e) => {
             if (!popup.contains(e.target) && !notificationContainer.contains(e.target)) {
                 hideNotificationPopup();
@@ -387,7 +378,7 @@ async function checkNotifications(forceRefresh = false) {
                     return 50; // Regular RX threshold
                 }
             }
-            if (categoryLower === 'over the counter' || categoryLower === 'otc') {
+            if (categoryLower === 'over the counter' || categoryLower === 'otc' || categoryLower === 'over-the-counter') {
                 if (subcategoryLower === 'syrup') {
                     return 5; // Syrup threshold
                 } else {
@@ -479,7 +470,6 @@ async function checkNotifications(forceRefresh = false) {
         
         const totalNotifications = expiringUrgent + expiringWarning + lowStockCount;
         
-        // Update notification badge
         if (notificationBadge) {
             notificationBadge.textContent = totalNotifications;
             notificationBadge.style.display = totalNotifications > 0 ? 'inline' : 'none';
@@ -494,7 +484,6 @@ async function checkNotifications(forceRefresh = false) {
             }
         }
         
-        // Store notification data
         window.notificationData = {
             expiringUrgent,
             expiringWarning,
@@ -570,7 +559,6 @@ async function loadNotificationDetails() {
             </div>
         `;
     } else {
-        // Urgent expiring items
         if (data.expiringProducts.filter(p => p.type === 'urgent').length > 0) {
             html += `
                 <div style="margin-bottom: 20px;">
@@ -608,7 +596,6 @@ async function loadNotificationDetails() {
             html += `</div>`;
         }
         
-        // Warning expiring items
         if (data.expiringProducts.filter(p => p.type === 'warning').length > 0) {
             html += `
                 <div style="margin-bottom: 20px;">
@@ -646,7 +633,6 @@ async function loadNotificationDetails() {
             html += `</div>`;
         }
         
-        // Low stock items with subcategory info
         if (data.lowStockProducts.length > 0) {
             html += `
                 <div style="margin-bottom: 20px;">
@@ -767,7 +753,6 @@ function setupCategoryListener() {
                 subcategoryContainer.style.display = 'block';
             } else {
                 subcategoryContainer.style.display = 'none';
-                // Clear subcategory selection
                 const subcategorySelect = document.getElementById('productSubcategory');
                 if (subcategorySelect) {
                     subcategorySelect.value = '';
@@ -782,13 +767,11 @@ async function loadInventory(forceRefresh = false) {
     try {
         console.log("%c🔍 LOADING INVENTORY WITH EXPIRY CHECK", "color: blue; font-size: 14px; font-weight: bold");
         
-        // Show loading indicator
         const tableBody = document.getElementById('inventoryTableBody');
         if (!tableBody) return;
         
         tableBody.innerHTML = '<tr><td colspan="9" class="loading">Loading inventory...</td></tr>';
         
-        // Use Promise.all for parallel fetching
         const [productsSnapshot, stockItemsSnapshot] = await Promise.all([
             getProductsWithCache(forceRefresh),
             getDocs(collection(db, "stock_items"))
@@ -796,14 +779,12 @@ async function loadInventory(forceRefresh = false) {
         
         tableBody.innerHTML = '';
         
-        // If no products found, load from stock_items
         if (productsSnapshot.empty) {
             console.log("%c⚠️ No products found. Loading from stock_items...", "color: orange; font-size: 14px; font-weight: bold");
             await loadInventoryFromStockItems(stockItemsSnapshot);
             return;
         }
         
-        // Create a map of productId -> available stock count and expiry info
         const stockMap = new Map();
         const expiryMap = new Map();
         
@@ -814,7 +795,6 @@ async function loadInventory(forceRefresh = false) {
         thirtyDaysFromNow.setDate(thirtyDaysFromNow.getDate() + 30);
         thirtyDaysFromNow.setHours(23, 59, 59, 999);
         
-        // Process all stock items in one pass
         stockItemsSnapshot.forEach(doc => {
             const item = doc.data();
             const productId = item.productId;
@@ -822,11 +802,9 @@ async function loadInventory(forceRefresh = false) {
             
             if (!productId) return;
             
-            // Count available stock
             if (status === 'available') {
                 stockMap.set(productId, (stockMap.get(productId) || 0) + 1);
                 
-                // Check expiry
                 if (item.expiryDate) {
                     const expiryDate = item.expiryDate.toDate();
                     expiryDate.setHours(0, 0, 0, 0);
@@ -845,7 +823,6 @@ async function loadInventory(forceRefresh = false) {
             }
         });
         
-        // Process each product
         const rows = [];
         productsSnapshot.forEach(doc => {
             const product = { id: doc.id, ...doc.data() };
@@ -853,24 +830,26 @@ async function loadInventory(forceRefresh = false) {
             const availableStock = stockMap.get(product.id) || 0;
             const expiringInfo = expiryMap.get(product.id) || { count: 0, items: [] };
             
-            // Determine stock status class based on category and subcategory-specific threshold
             const isLow = isLowStock(availableStock, product.category, product.subcategory);
             const stockClass = availableStock === 0 ? 'out-of-stock' : (isLow ? 'low-stock' : '');
             const stockStatus = availableStock === 0 ? 'Out of Stock' : availableStock;
             
-            // Add tooltip for low stock to show threshold
             let stockTooltip = '';
             if (isLow) {
                 const threshold = getLowStockThreshold(product.category, product.subcategory);
                 stockTooltip = ` title="Low stock threshold: less than ${threshold} units (Current: ${availableStock})"`;
             }
             
-            // Discount status badge
-            const discountStatus = product.discountable === false ? 
-                '<span class="non-discount-badge-table"><i class="fas fa-ban"></i> No Discount</span>' : 
-                '<span class="discount-badge-table"><i class="fas fa-tag"></i> Discountable</span>';
+            // Discount status badge - FIXED: Now shows proper discount eligibility
+            let discountStatus = '';
+            if (product.discountable === false) {
+                discountStatus = '<span class="non-discount-badge-table"><i class="fas fa-ban"></i> No Discount Ever</span>';
+            } else if (product.discountable === 'prescription') {
+                discountStatus = '<span class="prescription-badge-table"><i class="fas fa-prescription"></i> Prescription Required</span>';
+            } else {
+                discountStatus = '<span class="discount-badge-table"><i class="fas fa-tag"></i> Discountable</span>';
+            }
             
-            // Expiry display
             let expiryDisplay = '<span class="no-expiry">—</span>';
             
             if (expiringInfo.count > 0) {
@@ -879,18 +858,15 @@ async function loadInventory(forceRefresh = false) {
                 </span>`;
             }
             
-            // Display brand name and generic name
             const brandName = product.brand || product.name || 'N/A';
             const genericName = product.generic || 'N/A';
             
-            // Format category for display
             let displayCategory = product.category || 'N/A';
             if (displayCategory === 'rx') displayCategory = 'RX';
             else if (displayCategory === 'over the counter') displayCategory = 'Over the Counter';
             else if (displayCategory === 'food') displayCategory = 'Food';
             else if (displayCategory === 'general merchandise') displayCategory = 'General Merchandise';
             
-            // Add subcategory display
             const subcategoryDisplay = product.subcategory ? 
                 `<span class="subcategory-badge">${product.subcategory}</span>` : '';
             
@@ -912,10 +888,8 @@ async function loadInventory(forceRefresh = false) {
             rows.push(row);
         });
         
-        // Append all rows at once
         rows.forEach(row => tableBody.appendChild(row));
         
-        // Add mobile data labels
         document.querySelectorAll('#inventoryTableBody tr').forEach(row => {
             const cells = row.querySelectorAll('td');
             const labels = ['Code', 'Brand', 'Generic', 'Category', 'Price', 'Stock', 'Expiring Soon', 'Actions'];
@@ -924,7 +898,6 @@ async function loadInventory(forceRefresh = false) {
             });
         });
         
-        // Add event listeners
         document.querySelectorAll('.edit-product').forEach(btn => {
             btn.addEventListener('click', () => editProduct(btn.dataset.id));
         });
@@ -960,7 +933,6 @@ async function loadInventoryFromStockItems(stockItemsSnapshot) {
             return;
         }
         
-        // Group stock items by product
         const productGroups = new Map();
         const today = new Date();
         today.setHours(0, 0, 0, 0);
@@ -971,7 +943,6 @@ async function loadInventoryFromStockItems(stockItemsSnapshot) {
         stockItemsSnapshot.forEach(doc => {
             const item = { id: doc.id, ...doc.data() };
             
-            // Create a unique key for this product
             const productKey = item.productId || `${item.productName}-${item.productGeneric}`;
             
             if (!productGroups.has(productKey)) {
@@ -996,7 +967,6 @@ async function loadInventoryFromStockItems(stockItemsSnapshot) {
             if (item.status === 'available') {
                 group.availableCount++;
                 
-                // Check for expiring soon
                 if (item.expiryDate) {
                     const expiryDate = item.expiryDate.toDate();
                     expiryDate.setHours(0, 0, 0, 0);
@@ -1010,25 +980,20 @@ async function loadInventoryFromStockItems(stockItemsSnapshot) {
         
         console.log(`Found ${productGroups.size} unique product groups from stock items`);
         
-        // Display each product group
         const rows = [];
         for (const [key, group] of productGroups) {
-            // Get a sample item for additional data
             const sampleItem = group.stockItems[0] || {};
             
-            // Determine stock status class based on category and subcategory-specific threshold
             const isLow = isLowStock(group.availableCount, group.category, group.subcategory);
             const stockClass = group.availableCount === 0 ? 'out-of-stock' : (isLow ? 'low-stock' : '');
             const stockStatus = group.availableCount === 0 ? 'Out of Stock' : group.availableCount;
             
-            // Add tooltip for low stock to show threshold
             let stockTooltip = '';
             if (isLow) {
                 const threshold = getLowStockThreshold(group.category, group.subcategory);
                 stockTooltip = ` title="Low stock threshold: less than ${threshold} units (Current: ${group.availableCount})"`;
             }
             
-            // Generate product code from serial number if available
             let productCode = group.code;
             if (sampleItem.serialNumber) {
                 const codeMatch = sampleItem.serialNumber.match(/^([A-Z0-9-]+)/);
@@ -1037,7 +1002,6 @@ async function loadInventoryFromStockItems(stockItemsSnapshot) {
                 }
             }
             
-            // Expiry display
             let expiryDisplay = '<span class="no-expiry">—</span>';
             if (group.expiringCount > 0) {
                 expiryDisplay = `<span class="expiry-badge expiring-soon" title="${group.expiringCount} item(s) expiring within 30 days">
@@ -1045,17 +1009,14 @@ async function loadInventoryFromStockItems(stockItemsSnapshot) {
                 </span>`;
             }
             
-            // Price display
             const price = group.price || sampleItem.productPrice || 0;
             
-            // Format category for display
             let displayCategory = group.category || 'Uncategorized';
             if (displayCategory.toLowerCase() === 'rx') displayCategory = 'RX';
             else if (displayCategory.toLowerCase() === 'over the counter') displayCategory = 'Over the Counter';
             else if (displayCategory.toLowerCase() === 'food') displayCategory = 'Food';
             else if (displayCategory.toLowerCase() === 'general merchandise') displayCategory = 'General Merchandise';
             
-            // Add subcategory display
             const subcategoryDisplay = group.subcategory ? 
                 `<span class="subcategory-badge">${group.subcategory}</span>` : '';
             
@@ -1077,13 +1038,10 @@ async function loadInventoryFromStockItems(stockItemsSnapshot) {
             rows.push(row);
         }
         
-        // Append all rows at once
         rows.forEach(row => tableBody.appendChild(row));
         
-        // Add mobile data labels
         addMobileLabels();
         
-        // Add event listeners for the new buttons
         document.querySelectorAll('.view-stock-items').forEach(btn => {
             btn.addEventListener('click', () => {
                 const productKey = btn.dataset.productKey;
@@ -1119,10 +1077,8 @@ async function loadInventoryFromStockItems(stockItemsSnapshot) {
 // Function to view stock items by product key (optimized)
 async function viewStockItemsByProductKey(productKey, brandName) {
     try {
-        // Get all stock items
         const stockItemsSnapshot = await getDocs(collection(db, "stock_items"));
         
-        // Filter items that belong to this product group
         const productItems = [];
         stockItemsSnapshot.forEach(doc => {
             const item = { id: doc.id, ...doc.data() };
@@ -1159,7 +1115,6 @@ async function viewStockItemsByProductKey(productKey, brandName) {
             thirtyDaysFromNow.setDate(thirtyDaysFromNow.getDate() + 30);
             thirtyDaysFromNow.setHours(23, 59, 59, 999);
             
-            // Sort by expiry date (soonest first)
             productItems.sort((a, b) => {
                 if (a.expiryDate && b.expiryDate) {
                     return a.expiryDate.toDate() - b.expiryDate.toDate();
@@ -1236,7 +1191,6 @@ async function viewStockItemsByProductKey(productKey, brandName) {
         
         html += '</div>';
         
-        // Add summary
         const availableCount = productItems.filter(item => item.status === 'available').length;
         const soldCount = productItems.filter(item => item.status === 'sold').length;
         const expiringCount = productItems.filter(item => {
@@ -1286,7 +1240,6 @@ async function createProductFromStockGroup(productKey, brand, generic, price) {
     if (!confirm(`Create a product record for "${brand}" from existing stock items?`)) return;
     
     try {
-        // Get all stock items for this group
         const stockItemsSnapshot = await getDocs(collection(db, "stock_items"));
         const groupItems = [];
         
@@ -1303,13 +1256,9 @@ async function createProductFromStockGroup(productKey, brand, generic, price) {
             return;
         }
         
-        // Count available items
         const availableCount = groupItems.filter(item => item.status === 'available').length;
-        
-        // Get sample item for category and subcategory
         const sampleItem = groupItems[0] || {};
         
-        // Create the product
         const productData = {
             code: `PROD-${Date.now()}`,
             brand: brand,
@@ -1326,7 +1275,6 @@ async function createProductFromStockGroup(productKey, brand, generic, price) {
         
         const productRef = await addDoc(collection(db, "products"), productData);
         
-        // Update all stock items with the new productId
         const batch = writeBatch(db);
         groupItems.forEach(item => {
             const stockItemRef = doc(db, "stock_items", item.id);
@@ -1343,7 +1291,6 @@ async function createProductFromStockGroup(productKey, brand, generic, price) {
         
         showNotification(`Product "${brand}" created successfully with ${availableCount} stock items`, 'success');
         
-        // Reload inventory
         loadInventory();
         
     } catch (error) {
@@ -1357,7 +1304,6 @@ async function deleteProductGroup(productKey) {
     if (!confirm('Are you sure you want to delete ALL stock items in this group? This action cannot be undone.')) return;
     
     try {
-        // Get all stock items for this group
         const stockItemsSnapshot = await getDocs(collection(db, "stock_items"));
         const batch = writeBatch(db);
         let deleteCount = 0;
@@ -1378,7 +1324,6 @@ async function deleteProductGroup(productKey) {
             showNotification('No items found to delete', 'info');
         }
         
-        // Reload inventory
         loadInventory();
         
     } catch (error) {
@@ -1508,7 +1453,6 @@ async function viewStockItems(productId, productName) {
             const availableCount = Array.from(stockItemsSnapshot.docs).filter(d => d.data().status === 'available').length;
             const soldCount = Array.from(stockItemsSnapshot.docs).filter(d => d.data().status === 'sold').length;
             
-            // Calculate expiring count
             const today = new Date();
             today.setHours(0, 0, 0, 0);
             const thirtyDaysFromNow = new Date(today);
@@ -1580,7 +1524,6 @@ window.returnSoldItem = async function(stockItemId) {
         
         const batch = writeBatch(db);
         
-        // Return the item to available
         batch.update(stockItemRef, {
             status: 'available',
             soldDate: null,
@@ -1589,7 +1532,6 @@ window.returnSoldItem = async function(stockItemId) {
             returnedBy: loggedInUserId
         });
         
-        // Update product stock if product exists
         if (stockItem.productId) {
             const availableStockQuery = query(
                 collection(db, "stock_items"),
@@ -1609,7 +1551,6 @@ window.returnSoldItem = async function(stockItemId) {
             }
         }
         
-        // Create return record
         const returnRef = doc(collection(db, "returns"));
         batch.set(returnRef, {
             stockItemId: stockItemId,
@@ -1626,10 +1567,8 @@ window.returnSoldItem = async function(stockItemId) {
         
         showNotification('Item returned to inventory successfully', 'success');
         
-        // Refresh views - use force refresh to bypass cache
         await loadInventory(true);
         
-        // Close modal if open
         const modal = document.getElementById('stockItemsModal');
         if (modal && modal.style.display === 'block') {
             modal.style.display = 'none';
@@ -1678,7 +1617,6 @@ window.markStockAsSold = async function(stockItemId) {
             soldBy: loggedInUserId
         });
         
-        // Update product total stock count if product exists
         if (stockItem.productId) {
             try {
                 const availableStockQuery = query(
@@ -1711,10 +1649,8 @@ window.markStockAsSold = async function(stockItemId) {
         
         showNotification('Stock item marked as sold', 'success');
         
-        // Refresh views with force refresh
         await loadInventory(true);
         
-        // Close modal if open
         const modal = document.getElementById('stockItemsModal');
         if (modal && modal.style.display === 'block') {
             modal.style.display = 'none';
@@ -1742,7 +1678,6 @@ window.deleteStockItem = async function(stockItemId) {
         
         await deleteDoc(stockItemRef);
         
-        // Update product total stock if product exists
         if (stockItem.productId) {
             try {
                 const availableStockQuery = query(
@@ -1768,10 +1703,8 @@ window.deleteStockItem = async function(stockItemId) {
         
         showNotification('Stock item deleted', 'success');
         
-        // Refresh views with force refresh
         await loadInventory(true);
         
-        // Close modal if open
         const modal = document.getElementById('stockItemsModal');
         if (modal && modal.style.display === 'block') {
             modal.style.display = 'none';
@@ -1810,13 +1743,12 @@ function addEventListeners() {
     });
 }
 
-// ==================== FILTERS ====================
+// ==================== FIXED FILTERS ====================
 function setupInventoryFilters() {
     const searchInput = document.getElementById('inventorySearch');
     const categoryFilter = document.getElementById('categoryFilter');
     const stockFilter = document.getElementById('stockFilter');
     
-    // Debounce search input to improve performance
     let searchTimeout;
     
     const filterFunction = () => {
@@ -1830,19 +1762,49 @@ function setupInventoryFilters() {
             let show = true;
             const text = row.textContent.toLowerCase();
             
-            if (searchTerm && !text.includes(searchTerm)) show = false;
+            if (searchTerm && !text.includes(searchTerm)) {
+                show = false;
+            }
             
             if (show && category) {
                 const rowCategory = row.querySelector('td:nth-child(4)')?.textContent || '';
-                if (rowCategory.toLowerCase() !== category.toLowerCase()) show = false;
+                
+                let categoryMatch = false;
+                const rowCategoryLower = rowCategory.toLowerCase();
+                
+                switch(category) {
+                    case 'rx':
+                        categoryMatch = rowCategoryLower.includes('rx');
+                        break;
+                    case 'over the counter':
+                        categoryMatch = rowCategoryLower.includes('over the counter') || 
+                                      rowCategoryLower.includes('otc');
+                        break;
+                    case 'food':
+                        categoryMatch = rowCategoryLower.includes('food');
+                        break;
+                    case 'general merchandise':
+                        categoryMatch = rowCategoryLower.includes('general') || 
+                                      rowCategoryLower.includes('merchandise');
+                        break;
+                    default:
+                        categoryMatch = true;
+                }
+                
+                show = categoryMatch;
             }
             
             if (show && stock) {
                 const stockText = row.querySelector('td:nth-child(6)')?.textContent || '';
                 const stockValue = parseInt(stockText) || 0;
                 
-                if (stock === 'low' && (stockValue >= 10 || stockValue === 0)) show = false;
-                if (stock === 'out' && stockValue !== 0) show = false;
+                if (stock === 'low') {
+                    const stockCell = row.querySelector('td:nth-child(6)');
+                    show = stockCell && stockCell.classList.contains('low-stock');
+                } else if (stock === 'out') {
+                    const stockCell = row.querySelector('td:nth-child(6)');
+                    show = stockCell && (stockCell.classList.contains('out-of-stock') || stockValue === 0);
+                }
             }
             
             row.style.display = show ? '' : 'none';
@@ -1856,8 +1818,13 @@ function setupInventoryFilters() {
         });
     }
     
-    if (categoryFilter) categoryFilter.addEventListener('change', filterFunction);
-    if (stockFilter) stockFilter.addEventListener('change', filterFunction);
+    if (categoryFilter) {
+        categoryFilter.addEventListener('change', filterFunction);
+    }
+    
+    if (stockFilter) {
+        stockFilter.addEventListener('change', filterFunction);
+    }
 }
 
 // ==================== PRODUCT CRUD ====================
@@ -1877,7 +1844,6 @@ async function editProduct(productId) {
         document.getElementById('productBrand').value = product.brand || '';
         document.getElementById('productGeneric').value = product.generic || '';
         
-        // Handle category display
         let categoryValue = product.category || '';
         if (categoryValue === 'rx') categoryValue = 'rx';
         else if (categoryValue === 'over the counter') categoryValue = 'over the counter';
@@ -1886,7 +1852,6 @@ async function editProduct(productId) {
         
         document.getElementById('productCategory').value = categoryValue;
         
-        // Show/hide subcategory based on category
         const subcategoryContainer = document.getElementById('subcategoryContainer');
         const subcategorySelect = document.getElementById('productSubcategory');
         
@@ -1905,6 +1870,7 @@ async function editProduct(productId) {
         document.getElementById('productPrice').value = product.price || 0;
         document.getElementById('productStock').value = product.stock || 0;
         
+        // FIXED: Properly set discount radio buttons
         const discountableYes = document.getElementById('discountableYes');
         const discountableNo = document.getElementById('discountableNo');
         const prescriptionDiscountable = document.getElementById('prescriptionDiscountable');
@@ -1912,16 +1878,24 @@ async function editProduct(productId) {
         if (prescriptionDiscountable) {
             if (product.discountable === 'prescription') {
                 prescriptionDiscountable.checked = true;
+                discountableYes.checked = false;
+                discountableNo.checked = false;
             } else if (product.discountable === false) {
                 discountableNo.checked = true;
+                discountableYes.checked = false;
+                prescriptionDiscountable.checked = false;
             } else {
                 discountableYes.checked = true;
+                discountableNo.checked = false;
+                prescriptionDiscountable.checked = false;
             }
         } else {
             if (product.discountable === false) {
                 discountableNo.checked = true;
+                discountableYes.checked = false;
             } else {
                 discountableYes.checked = true;
+                discountableNo.checked = false;
             }
         }
         
@@ -1943,7 +1917,6 @@ async function editProduct(productId) {
 async function deleteProduct(productId) {
     if (confirm('Are you sure you want to delete this product and all its stock items?')) {
         try {
-            // Delete all stock items for this product
             const stockItemsQuery = query(
                 collection(db, "stock_items"),
                 where("productId", "==", productId)
@@ -1955,7 +1928,6 @@ async function deleteProduct(productId) {
                 batch.delete(doc.ref);
             });
             
-            // Delete the product
             const productRef = doc(db, "products", productId);
             batch.delete(productRef);
             
@@ -1970,7 +1942,6 @@ async function deleteProduct(productId) {
             
             showNotification('Product and all stock items deleted successfully', 'success');
             
-            // Clear cache and reload
             productsCache = null;
             stockItemsCache = null;
             await loadInventory(true);
@@ -1991,7 +1962,7 @@ if (productForm) {
         const editId = productForm.dataset.editId;
         
         try {
-            // Get discount eligibility
+            // FIXED: Get discount eligibility properly
             let discountable = true;
             const discountableYes = document.getElementById('discountableYes');
             const discountableNo = document.getElementById('discountableNo');
@@ -2008,16 +1979,13 @@ if (productForm) {
             const stockQuantity = parseInt(document.getElementById('productStock')?.value) || 0;
             const expiryDateInput = document.getElementById('productExpiry')?.value;
             
-            // Get category value
             let category = document.getElementById('productCategory')?.value || '';
             
-            // Ensure category is stored in consistent format
             if (category === 'rx') category = 'rx';
             else if (category === 'over the counter') category = 'over the counter';
             else if (category === 'food') category = 'food';
             else if (category === 'general merchandise') category = 'general merchandise';
             
-            // Get subcategory if applicable
             let subcategory = '';
             if (category === 'rx' || category === 'over the counter') {
                 subcategory = document.getElementById('productSubcategory')?.value || '';
@@ -2037,10 +2005,8 @@ if (productForm) {
             };
             
             if (editId) {
-                // Update existing product
                 const productRef = doc(db, "products", editId);
                 
-                // Get current stock items count
                 const stockItemsQuery = query(
                     collection(db, "stock_items"),
                     where("productId", "==", editId),
@@ -2051,7 +2017,6 @@ if (productForm) {
                 
                 await updateDoc(productRef, productData);
                 
-                // Update stock items with new product data
                 const allStockItemsQuery = query(
                     collection(db, "stock_items"),
                     where("productId", "==", editId)
@@ -2080,12 +2045,10 @@ if (productForm) {
                 
                 showNotification('Product updated successfully!', 'success');
             } else {
-                // Add new product
                 productData.createdAt = Timestamp.now();
                 productData.stock = 0;
                 const productRef = await addDoc(collection(db, "products"), productData);
                 
-                // Create individual stock items with expiry dates
                 if (stockQuantity > 0) {
                     const batch = writeBatch(db);
                     
@@ -2106,7 +2069,6 @@ if (productForm) {
                             createdBy: loggedInUserId
                         };
                         
-                        // Add expiry date if provided
                         if (expiryDateInput && expiryDateInput.trim() !== '') {
                             const expiryDate = new Date(expiryDateInput);
                             expiryDate.setHours(0, 0, 0, 0);
@@ -2118,7 +2080,6 @@ if (productForm) {
                     
                     await batch.commit();
                     
-                    // Update product stock count
                     await updateDoc(productRef, {
                         stock: stockQuantity
                     });
@@ -2139,10 +2100,8 @@ if (productForm) {
             productForm.dataset.editId = '';
             document.getElementById('discountableYes').checked = true;
             
-            // Hide subcategory container
             document.getElementById('subcategoryContainer').style.display = 'none';
             
-            // Clear cache and reload
             productsCache = null;
             stockItemsCache = null;
             await loadInventory(true);
@@ -2192,7 +2151,6 @@ document.addEventListener('DOMContentLoaded', () => {
         });
     }
     
-    // Existing product search
     const existingProductSearch = document.getElementById('existingProductSearch');
     if (existingProductSearch) {
         existingProductSearch.addEventListener('input', debounce(async (e) => {
@@ -2228,14 +2186,12 @@ document.addEventListener('DOMContentLoaded', () => {
                 resultsDiv.innerHTML = '';
                 
                 results.slice(0, 10).forEach(product => {
-                    // Format category for display
                     let displayCategory = product.category || 'N/A';
                     if (displayCategory === 'rx') displayCategory = 'RX';
                     else if (displayCategory === 'over the counter') displayCategory = 'Over the Counter';
                     else if (displayCategory === 'food') displayCategory = 'Food';
                     else if (displayCategory === 'general merchandise') displayCategory = 'General Merchandise';
                     
-                    // Add subcategory if exists
                     const subcategoryDisplay = product.subcategory ? 
                         ` - ${product.subcategory}` : '';
                     
@@ -2264,7 +2220,6 @@ document.addEventListener('DOMContentLoaded', () => {
         }, 300));
     }
     
-    // Confirm add stock
     const confirmAddStockBtn = document.getElementById('confirmAddStockBtn');
     if (confirmAddStockBtn) {
         confirmAddStockBtn.addEventListener('click', async () => {
@@ -2285,7 +2240,6 @@ document.addEventListener('DOMContentLoaded', () => {
             try {
                 const batch = writeBatch(db);
                 
-                // Create individual stock items with expiry dates
                 for (let i = 0; i < quantity; i++) {
                     const serialNumber = `${selectedProduct.code || 'PROD'}-${Date.now()}-${i + 1}`;
                     const stockItemRef = doc(collection(db, "stock_items"));
@@ -2303,7 +2257,6 @@ document.addEventListener('DOMContentLoaded', () => {
                         createdBy: loggedInUserId
                     };
                     
-                    // Add expiry date if provided
                     if (newExpiry && newExpiry.trim() !== '') {
                         const expiryDate = new Date(newExpiry);
                         expiryDate.setHours(0, 0, 0, 0);
@@ -2315,7 +2268,6 @@ document.addEventListener('DOMContentLoaded', () => {
                 
                 await batch.commit();
                 
-                // Update product stock count
                 const availableStockQuery = query(
                     collection(db, "stock_items"),
                     where("productId", "==", selectedProduct.id),
@@ -2344,7 +2296,6 @@ document.addEventListener('DOMContentLoaded', () => {
                 document.getElementById('existingProductResults').innerHTML = '';
                 window.selectedProductForStock = null;
                 
-                // Clear cache and reload
                 productsCache = null;
                 stockItemsCache = null;
                 await loadInventory(true);
@@ -2438,7 +2389,6 @@ function setupEventListeners() {
 window.debugInventory = async function() {
     console.clear();
     console.log("%c🔍 FORCING INVENTORY RELOAD WITH DEBUG...", "color: blue; font-size: 16px; font-weight: bold");
-    // Clear cache and force refresh
     productsCache = null;
     stockItemsCache = null;
     await loadInventory(true);

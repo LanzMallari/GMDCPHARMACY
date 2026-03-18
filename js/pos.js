@@ -15,6 +15,7 @@ let currentDiscountType = 'none';
 let isProcessingPayment = false;
 let unsubscribeProducts = null;
 let sellExpiringFirst = true;
+let hasPrescription = false;
 
 // Enhanced caching system
 let productsCache = {
@@ -26,16 +27,16 @@ let stockItemsCache = {
     data: null,
     timestamp: 0
 };
-const CACHE_DURATION = 60000; // 60 seconds cache
-const STOCK_CACHE_DURATION = 60000; // 60 seconds
+const CACHE_DURATION = 60000;
+const STOCK_CACHE_DURATION = 60000;
 
 // Notification state
 let notificationBadge = null;
 let notificationPopup = null;
 let notificationInterval = null;
 let lastPopupDismissed = 0;
-const NOTIFICATION_CHECK_INTERVAL = 60 * 60 * 1000; // 1 hour
-const POPUP_DISMISS_DURATION = 60 * 60 * 1000; // 1 hour
+const NOTIFICATION_CHECK_INTERVAL = 60 * 60 * 1000;
+const POPUP_DISMISS_DURATION = 60 * 60 * 1000;
 
 // Discount rates
 const DISCOUNT_RATES = {
@@ -59,15 +60,24 @@ async function initializePOS() {
     setupSidebar();
     setupSellExpiringToggle();
     setupDiscountOptions();
+    setupPrescriptionCheckbox();
 }
 
 async function loadUserData() {
-    const userData = await fetchUserData(loggedInUserId);
-    if (userData) {
-        const fullName = `${userData.firstName || ''} ${userData.lastName || ''}`.trim() || userData.email?.split('@')[0] || 'User';
-        document.getElementById('sidebarUserName').textContent = fullName;
-        document.getElementById('sidebarUserEmail').textContent = userData.email || '';
-        document.getElementById('welcomeUserName').textContent = fullName.split(' ')[0] || 'User';
+    try {
+        const userData = await fetchUserData(loggedInUserId);
+        if (userData) {
+            const fullName = `${userData.firstName || ''} ${userData.lastName || ''}`.trim() || userData.email?.split('@')[0] || 'User';
+            const sidebarUserName = document.getElementById('sidebarUserName');
+            const sidebarUserEmail = document.getElementById('sidebarUserEmail');
+            const welcomeUserName = document.getElementById('welcomeUserName');
+            
+            if (sidebarUserName) sidebarUserName.textContent = fullName;
+            if (sidebarUserEmail) sidebarUserEmail.textContent = userData.email || '';
+            if (welcomeUserName) welcomeUserName.textContent = fullName.split(' ')[0] || 'User';
+        }
+    } catch (error) {
+        console.error("Error loading user data:", error);
     }
 }
 
@@ -96,8 +106,10 @@ function setupSidebar() {
         burgerBtn.addEventListener('click', () => {
             sidebar.classList.toggle('active');
             const icon = burgerBtn.querySelector('i');
-            icon.classList.toggle('fa-bars');
-            icon.classList.toggle('fa-times');
+            if (icon) {
+                icon.classList.toggle('fa-bars');
+                icon.classList.toggle('fa-times');
+            }
             
             if (sidebar.classList.contains('active') && window.innerWidth <= 768) {
                 createOverlay();
@@ -116,9 +128,16 @@ function createOverlay() {
         document.body.appendChild(overlay);
         
         overlay.addEventListener('click', () => {
-            document.querySelector('.sidebar').classList.remove('active');
-            document.getElementById('burgerBtn').querySelector('i').classList.remove('fa-times');
-            document.getElementById('burgerBtn').querySelector('i').classList.add('fa-bars');
+            const sidebar = document.querySelector('.sidebar');
+            const burgerBtn = document.getElementById('burgerBtn');
+            if (sidebar) sidebar.classList.remove('active');
+            if (burgerBtn) {
+                const icon = burgerBtn.querySelector('i');
+                if (icon) {
+                    icon.classList.remove('fa-times');
+                    icon.classList.add('fa-bars');
+                }
+            }
             overlay.remove();
         });
     }
@@ -129,11 +148,55 @@ function removeOverlay() {
     if (overlay) overlay.remove();
 }
 
-// ==================== OPTIMIZED NOTIFICATION SYSTEM ====================
+// ==================== PRESCRIPTION CHECKBOX ====================
+
+function setupPrescriptionCheckbox() {
+    const discountContainer = document.querySelector('.discount-container');
+    if (!discountContainer) return;
+    
+    if (document.getElementById('prescriptionCheckbox')) return;
+    
+    const prescriptionHTML = `
+        <div class="prescription-checkbox-container" style="margin-top: 10px; padding: 10px; background: #f8f9fa; border-radius: 8px; border-left: 4px solid #3498db;">
+            <label class="prescription-label" style="display: flex; align-items: center; gap: 10px; cursor: pointer;">
+                <input type="checkbox" id="prescriptionCheckbox" style="width: 18px; height: 18px; cursor: pointer;">
+                <span style="font-weight: 500; color: #2c3e50;">
+                    <i class="fas fa-prescription" style="color: #3498db; margin-right: 8px;"></i>
+                    With Valid Prescription (Required for discount on prescription-only items)
+                </span>
+            </label>
+            <small style="display: block; margin-top: 5px; color: #7f8c8d; font-size: 12px;">
+                <i class="fas fa-info-circle"></i> Check this box if the customer has a valid medical prescription. 
+                Some items marked as "Prescription Required" can only be discounted with a prescription.
+            </small>
+        </div>
+    `;
+    
+    discountContainer.insertAdjacentHTML('beforeend', prescriptionHTML);
+    
+    document.getElementById('prescriptionCheckbox').addEventListener('change', (e) => {
+        hasPrescription = e.target.checked;
+        
+        if (hasPrescription && currentDiscountType !== 'none') {
+            showNotification('Prescription verified. Discount will be applied to eligible prescription items.', 'success');
+        } else if (!hasPrescription && currentDiscountType !== 'none') {
+            const hasPrescriptionOnlyItems = cart.some(item => item.prescriptionRequired === true);
+            if (hasPrescriptionOnlyItems) {
+                showNotification('Prescription items will be sold at full price. Regular items still get discount.', 'info');
+            }
+        }
+        
+        updateCartDisplay();
+        if (document.getElementById('checkoutModal') && document.getElementById('checkoutModal').style.display === 'block') {
+            updateCheckoutModal();
+        }
+    });
+}
+
+// ==================== NOTIFICATION SYSTEM ====================
 
 function initializeNotifications() {
     createNotificationElements();
-    // Don't block main thread, check in background
     setTimeout(() => checkNotifications(), 2000);
     
     if (notificationInterval) {
@@ -158,15 +221,17 @@ function createNotificationElements() {
     notificationBadge = notificationContainer.querySelector('.badge');
     
     const notificationIcon = notificationContainer.querySelector('.notification-icon');
-    notificationIcon.addEventListener('mouseenter', () => {
-        notificationIcon.style.transform = 'scale(1.05)';
-        notificationIcon.style.boxShadow = '0 6px 20px rgba(102, 126, 234, 0.4)';
-    });
-    
-    notificationIcon.addEventListener('mouseleave', () => {
-        notificationIcon.style.transform = 'scale(1)';
-        notificationIcon.style.boxShadow = '0 4px 15px rgba(102, 126, 234, 0.3)';
-    });
+    if (notificationIcon) {
+        notificationIcon.addEventListener('mouseenter', () => {
+            notificationIcon.style.transform = 'scale(1.05)';
+            notificationIcon.style.boxShadow = '0 6px 20px rgba(102, 126, 234, 0.4)';
+        });
+        
+        notificationIcon.addEventListener('mouseleave', () => {
+            notificationIcon.style.transform = 'scale(1)';
+            notificationIcon.style.boxShadow = '0 4px 15px rgba(102, 126, 234, 0.3)';
+        });
+    }
     
     if (!document.getElementById('notificationPopup')) {
         const popup = document.createElement('div');
@@ -251,21 +316,30 @@ function createNotificationElements() {
             toggleNotificationPopup();
         });
         
-        popup.querySelector('.notification-close-btn').addEventListener('click', (e) => {
-            e.stopPropagation();
-            hideNotificationPopup();
-            lastPopupDismissed = Date.now();
-        });
+        const closeBtn = popup.querySelector('.notification-close-btn');
+        if (closeBtn) {
+            closeBtn.addEventListener('click', (e) => {
+                e.stopPropagation();
+                hideNotificationPopup();
+                lastPopupDismissed = Date.now();
+            });
+        }
         
-        popup.querySelector('.notification-refresh-btn').addEventListener('click', (e) => {
-            e.stopPropagation();
-            checkNotifications(true);
-        });
+        const refreshBtn = popup.querySelector('.notification-refresh-btn');
+        if (refreshBtn) {
+            refreshBtn.addEventListener('click', (e) => {
+                e.stopPropagation();
+                checkNotifications(true);
+            });
+        }
         
-        popup.querySelector('.view-all-notifications').addEventListener('click', (e) => {
-            e.stopPropagation();
-            window.location.href = 'reports.html';
-        });
+        const viewAllBtn = popup.querySelector('.view-all-notifications');
+        if (viewAllBtn) {
+            viewAllBtn.addEventListener('click', (e) => {
+                e.stopPropagation();
+                window.location.href = 'reports.html';
+            });
+        }
         
         document.addEventListener('click', (e) => {
             if (!popup.contains(e.target) && !notificationContainer.contains(e.target)) {
@@ -306,7 +380,6 @@ function showNotificationPopup() {
     }, 10000);
 }
 
-// Optimized low stock threshold with subcategory
 function getLowStockThreshold(category, subcategory) {
     const categoryLower = (category || '').toLowerCase();
     const subcategoryLower = (subcategory || '').toLowerCase();
@@ -348,10 +421,8 @@ async function checkNotifications(forceRefresh = false) {
         let expiringUrgent = 0, expiringWarning = 0, lowStockCount = 0;
         const expiringProducts = [], lowStockProducts = [];
         
-        // Create available stock map
         const availableStockMap = new Map();
         
-        // Single pass through stock items
         stockItemsSnapshot.forEach(doc => {
             const item = doc.data();
             if (item.status === 'available' && item.productId) {
@@ -394,7 +465,6 @@ async function checkNotifications(forceRefresh = false) {
             }
         });
         
-        // Check low stock
         productsSnapshot.forEach(doc => {
             const product = doc.data();
             const actualStock = availableStockMap.get(doc.id) || 0;
@@ -416,7 +486,6 @@ async function checkNotifications(forceRefresh = false) {
             }
         });
         
-        // Sort notifications
         expiringProducts.sort((a, b) => {
             if (a.type === 'urgent' && b.type !== 'urgent') return -1;
             if (a.type !== 'urgent' && b.type === 'urgent') return 1;
@@ -485,7 +554,6 @@ async function loadNotificationDetails() {
     
     let html = '';
     
-    // Urgent expiring
     const urgentItems = data.expiringProducts.filter(p => p.type === 'urgent');
     if (urgentItems.length > 0) {
         html += `<div style="margin-bottom: 20px;"><div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; padding: 0 5px;"><div style="display: flex; align-items: center; gap: 8px;"><div style="width: 8px; height: 8px; background: #e74c3c; border-radius: 50%;"></div><h4 style="margin: 0; font-size: 14px; color: #e74c3c; font-weight: 600;">URGENT - Expiring Soon</h4></div><span style="background: #fdf3f2; color: #e74c3c; padding: 4px 10px; border-radius: 20px; font-size: 11px; font-weight: 600;">${urgentItems.length} items</span></div>`;
@@ -496,7 +564,6 @@ async function loadNotificationDetails() {
         html += `</div>`;
     }
     
-    // Warning expiring
     const warningItems = data.expiringProducts.filter(p => p.type === 'warning');
     if (warningItems.length > 0) {
         html += `<div style="margin-bottom: 20px;"><div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; padding: 0 5px;"><div style="display: flex; align-items: center; gap: 8px;"><div style="width: 8px; height: 8px; background: #f39c12; border-radius: 50%;"></div><h4 style="margin: 0; font-size: 14px; color: #f39c12; font-weight: 600;">Expiring Soon</h4></div><span style="background: #fef9e7; color: #f39c12; padding: 4px 10px; border-radius: 20px; font-size: 11px; font-weight: 600;">${warningItems.length} items</span></div>`;
@@ -507,7 +574,6 @@ async function loadNotificationDetails() {
         html += `</div>`;
     }
     
-    // Low stock with syrup priority
     if (data.lowStockProducts.length > 0) {
         const syrupItems = data.lowStockProducts.filter(p => p.name.includes('SYRUP'));
         const otherItems = data.lowStockProducts.filter(p => !p.name.includes('SYRUP'));
@@ -559,17 +625,52 @@ function setupDiscountOptions() {
         </div>
     `;
     
-    document.querySelectorAll('input[name="discountType"]').forEach(radio => {
-        radio.addEventListener('change', (e) => {
-            currentDiscountType = e.target.value;
-            currentDiscount = currentDiscountType === 'none' ? 0 : DISCOUNT_RATES[currentDiscountType];
-            updateCartDisplay();
-            if (document.getElementById('checkoutModal').style.display === 'block') updateCheckoutModal();
-            
-            if (currentDiscountType === 'seniorPWD') showNotification('Senior/PWD discount applied (20%)', 'info');
-            else if (currentDiscountType === 'yakap') showNotification('YAKAP discount applied (30%)', 'info');
-        });
+    const radioButtons = document.querySelectorAll('input[name="discountType"]');
+    radioButtons.forEach(radio => {
+        radio.addEventListener('change', handleDiscountChange);
     });
+}
+
+function handleDiscountChange(e) {
+    const newDiscountType = e.target.value;
+    
+    if (cart.length === 0) {
+        showNotification('Add items to cart first', 'info');
+        document.querySelector('input[name="discountType"][value="none"]').checked = true;
+        return;
+    }
+    
+    if (newDiscountType !== 'none') {
+        const nonDiscountableItems = cart.filter(item => item.discountable === false);
+        const prescriptionRequiredItems = cart.filter(item => item.prescriptionRequired === true);
+        
+        if (nonDiscountableItems.length > 0) {
+            const names = nonDiscountableItems.map(item => item.brand).join(', ');
+            showNotification(`Note: ${names} ${nonDiscountableItems.length === 1 ? 'is' : 'are'} not eligible for discount`, 'info');
+        }
+        
+        if (prescriptionRequiredItems.length > 0 && !hasPrescription) {
+            const names = prescriptionRequiredItems.map(item => item.brand).join(', ');
+            showNotification(`Prescription required for: ${names}. These items will be sold at full price. Regular items will get discount.`, 'info');
+        }
+    }
+    
+    currentDiscountType = newDiscountType;
+    currentDiscount = newDiscountType === 'none' ? 0 : DISCOUNT_RATES[newDiscountType];
+    
+    updateCartDisplay();
+    if (document.getElementById('checkoutModal') && 
+        document.getElementById('checkoutModal').style.display === 'block') {
+        updateCheckoutModal();
+    }
+    
+    if (newDiscountType === 'seniorPWD') {
+        showNotification('Senior/PWD discount applied (20%)', 'success');
+    } else if (newDiscountType === 'yakap') {
+        showNotification('YAKAP discount applied (30%)', 'success');
+    } else {
+        showNotification('Discount removed', 'info');
+    }
 }
 
 // ==================== SELL EXPIRING FIRST TOGGLE ====================
@@ -597,7 +698,6 @@ function setupSellExpiringToggle() {
     }
 }
 
-// Optimized function to get stock items with caching
 async function getStockItemsWithCache(forceRefresh = false) {
     const now = Date.now();
     if (!forceRefresh && stockItemsCache.data && (now - stockItemsCache.timestamp) < STOCK_CACHE_DURATION) {
@@ -609,7 +709,7 @@ async function getStockItemsWithCache(forceRefresh = false) {
     return snapshot;
 }
 
-// ==================== OPTIMIZED PRODUCT LOADING ====================
+// ==================== PRODUCT LOADING ====================
 
 function loadProducts() {
     try {
@@ -632,12 +732,10 @@ function loadProducts() {
                     return;
                 }
                 
-                // Use cached stock items
                 const stockItemsSnapshot = await getStockItemsWithCache();
                 const today = new Date(); today.setHours(0, 0, 0, 0);
                 const thirtyDaysFromNow = new Date(today); thirtyDaysFromNow.setDate(thirtyDaysFromNow.getDate() + 30);
                 
-                // Create expiry map in one pass
                 const expiryMap = new Map();
                 
                 stockItemsSnapshot.forEach(doc => {
@@ -669,7 +767,6 @@ function loadProducts() {
                     }
                 });
                 
-                // Build products array efficiently
                 products = [];
                 snapshot.forEach(doc => {
                     const product = { id: doc.id, ...doc.data() };
@@ -685,7 +782,6 @@ function loadProducts() {
                     products.push(product);
                 });
                 
-                // Clear filters and display
                 const searchInput = document.getElementById('posSearch');
                 const filterSelect = document.getElementById('posCategoryFilter');
                 if (searchInput) searchInput.value = '';
@@ -713,11 +809,10 @@ function displayProducts(productsToShow) {
     const today = new Date();
     today.setHours(0, 0, 0, 0);
     
-    // Use document fragment for batch DOM updates
     const fragment = document.createDocumentFragment();
     
     productsToShow.forEach(product => {
-        const isOutOfStock = product.stock <= 0;
+        const isOutOfStock = (product.stock || 0) <= 0;
         const discountStatus = product.discountable === false ? 'non-discountable' : '';
         
         const productCard = document.createElement('div');
@@ -734,7 +829,6 @@ function displayProducts(productsToShow) {
         const brandName = product.brand || product.name || 'Unnamed';
         const genericName = product.generic ? `<small class="generic-name">${product.generic}</small>` : '';
         
-        // Add syrup badge
         const syrupBadge = product.subcategory === 'syrup' ? '<span class="syrup-badge"> Syrup</span>' : '';
         
         let expiryWarning = '';
@@ -776,7 +870,6 @@ function displayProducts(productsToShow) {
     });
 }
 
-// Filter functions with debounce
 const posSearch = document.getElementById('posSearch');
 if (posSearch) {
     posSearch.addEventListener('input', debounce(filterPOSProducts, 300));
@@ -823,7 +916,7 @@ function addToCart(productId) {
     const product = products.find(p => p.id === productId);
     
     if (!product) { showNotification('Product not found', 'error'); return; }
-    if (product.stock <= 0) { showNotification('This product is out of stock!', 'error'); return; }
+    if ((product.stock || 0) <= 0) { showNotification('This product is out of stock!', 'error'); return; }
     
     if (product.expiringCount > 0) {
         const today = new Date();
@@ -836,11 +929,19 @@ function addToCart(productId) {
         }
     }
     
+    if (currentDiscountType !== 'none') {
+        if (product.discountable === false) {
+            showNotification(`${product.brand} is not eligible for any discount`, 'info');
+        } else if (product.discountable === 'prescription' && !hasPrescription) {
+            showNotification(`${product.brand} requires prescription for discount. Will be sold at full price.`, 'info');
+        }
+    }
+    
     const existingItem = cart.find(item => item.id === productId);
     const brandName = product.brand || product.name || 'Product';
     
     if (existingItem) {
-        if (existingItem.quantity + 1 > product.stock) {
+        if (existingItem.quantity + 1 > (product.stock || 0)) {
             showNotification(`Only ${product.stock} item(s) available in stock!`, 'error');
             return;
         }
@@ -848,17 +949,17 @@ function addToCart(productId) {
         showNotification(`Added another ${brandName} to cart`, 'success');
     } else {
         cart.push({
-            id: product.id,
-            brand: product.brand || product.name,
-            generic: product.generic,
-            price: product.price,
+            id: product.id || '',
+            brand: product.brand || product.name || 'Unknown',
+            generic: product.generic || '',
+            price: product.price || 0,
             quantity: 1,
-            stock: product.stock,
+            stock: product.stock || 0,
             discountable: product.discountable !== false,
             prescriptionRequired: product.discountable === 'prescription',
-            subcategory: product.subcategory,
-            expiringCount: product.expiringCount,
-            earliestExpiry: product.earliestExpiry,
+            subcategory: product.subcategory || '',
+            expiringCount: product.expiringCount || 0,
+            earliestExpiry: product.earliestExpiry || null,
             expiringItems: product.expiringItems || []
         });
         showNotification(`${brandName} added to cart`, 'success');
@@ -884,26 +985,13 @@ function updateCartDisplay() {
         return;
     }
     
-    // Update discount info
-    if (discountInfoEl) {
-        if (currentDiscountType !== 'none') {
-            const discountName = currentDiscountType === 'seniorPWD' ? 'Senior/PWD' : 'YAKAP';
-            discountInfoEl.innerHTML = `<div class="discount-info-badge ${currentDiscountType}"><i class="fas fa-${currentDiscountType === 'seniorPWD' ? 'id-card' : 'heart'}"></i> ${discountName} Discount (${currentDiscount}%)</div>`;
-        } else {
-            discountInfoEl.innerHTML = '';
-        }
-    }
-    
     const fragment = document.createDocumentFragment();
     const today = new Date();
-    let subtotal = 0;
     
     cart.forEach((item, index) => {
-        const itemTotal = item.price * item.quantity;
-        subtotal += itemTotal;
-        
+        const itemTotal = (item.price || 0) * (item.quantity || 0);
         const product = products.find(p => p.id === item.id);
-        const currentStock = product ? product.stock : 0;
+        const currentStock = product ? (product.stock || 0) : 0;
         
         const cartItem = document.createElement('div');
         cartItem.className = 'cart-item';
@@ -912,14 +1000,18 @@ function updateCartDisplay() {
         if (item.discountable === false) {
             discountableBadge = '<span class="non-discount-badge-small"><i class="fas fa-ban"></i> No Discount</span>';
         } else if (item.prescriptionRequired) {
-            discountableBadge = '<span class="prescription-badge-small"><i class="fas fa-prescription"></i> Rx Required</span>';
+            if (hasPrescription) {
+                discountableBadge = '<span class="prescription-badge-small verified"><i class="fas fa-prescription"></i> Rx Verified - Discount Applied</span>';
+            } else {
+                discountableBadge = '<span class="prescription-badge-small required"><i class="fas fa-exclamation-circle"></i> Rx Required - Full Price</span>';
+            }
         }
         
         const genericDisplay = item.generic ? `<small class="generic-cart">${item.generic}</small>` : '';
         const syrupBadge = item.subcategory === 'syrup' ? '<span class="syrup-badge-small">Syrup</span>' : '';
         
         let expiryWarning = '';
-        if (item.expiringCount > 0) {
+        if (item.expiringCount > 0 && item.earliestExpiry) {
             const daysUntil = Math.ceil((item.earliestExpiry - today) / (1000 * 60 * 60 * 24));
             const warningClass = daysUntil <= 7 ? 'expiry-critical-text' : 'expiry-warning-text';
             expiryWarning = `<small class="${warningClass}">⚠️ ${item.expiringCount} expiring in ${daysUntil} days</small>`;
@@ -927,16 +1019,16 @@ function updateCartDisplay() {
         
         cartItem.innerHTML = `
             <div class="cart-item-info">
-                <h4>${item.brand} ${syrupBadge} ${discountableBadge}</h4>
+                <h4>${item.brand || 'Unknown'} ${syrupBadge} ${discountableBadge}</h4>
                 ${genericDisplay}
-                <p>₱${item.price.toFixed(2)} x ${item.quantity}</p>
+                <p>₱${(item.price || 0).toFixed(2)} x ${item.quantity || 0}</p>
                 <small class="${item.quantity > currentStock ? 'text-danger' : ''}">Available: ${currentStock}</small>
                 ${expiryWarning}
             </div>
             <div class="cart-item-actions">
                 <span>₱${itemTotal.toFixed(2)}</span>
                 <button class="quantity-btn decrease-qty" data-index="${index}"><i class="fas fa-minus"></i></button>
-                <span class="quantity">${item.quantity}</span>
+                <span class="quantity">${item.quantity || 0}</span>
                 <button class="quantity-btn increase-qty" data-index="${index}" ${item.quantity >= currentStock ? 'disabled' : ''}><i class="fas fa-plus"></i></button>
                 <button class="remove-item" data-index="${index}"><i class="fas fa-trash"></i></button>
             </div>
@@ -946,12 +1038,14 @@ function updateCartDisplay() {
     
     cartItems.appendChild(fragment);
     
-    // Add event listeners
     document.querySelectorAll('.decrease-qty').forEach(btn => {
         btn.addEventListener('click', () => {
             const index = parseInt(btn.dataset.index);
-            if (cart[index].quantity > 1) cart[index].quantity--;
-            else cart.splice(index, 1);
+            if (cart[index] && cart[index].quantity > 1) {
+                cart[index].quantity--;
+            } else if (cart[index]) {
+                cart.splice(index, 1);
+            }
             updateCartDisplay();
         });
     });
@@ -960,34 +1054,90 @@ function updateCartDisplay() {
         btn.addEventListener('click', () => {
             const index = parseInt(btn.dataset.index);
             const item = cart[index];
-            const product = products.find(p => p.id === item.id);
-            if (product && item.quantity < product.stock) item.quantity++;
-            else showNotification(`Only ${product?.stock} items available!`, 'error');
-            updateCartDisplay();
+            if (item) {
+                const product = products.find(p => p.id === item.id);
+                if (product && item.quantity < (product.stock || 0)) {
+                    item.quantity++;
+                } else {
+                    showNotification(`Only ${product?.stock || 0} items available!`, 'error');
+                }
+                updateCartDisplay();
+            }
         });
     });
     
     document.querySelectorAll('.remove-item').forEach(btn => {
         btn.addEventListener('click', () => {
             const index = parseInt(btn.dataset.index);
-            cart.splice(index, 1);
-            updateCartDisplay();
+            if (cart[index]) {
+                cart.splice(index, 1);
+                updateCartDisplay();
+            }
         });
     });
     
-    // Calculate totals
-    let discountableSubtotal = 0, nonDiscountableSubtotal = 0;
+    // Calculate totals with proper discount handling
+    let discountableSubtotal = 0;
+    let nonDiscountableSubtotal = 0;
+    let prescriptionWithoutRxSubtotal = 0;
+
     cart.forEach(item => {
-        const itemTotal = item.price * item.quantity;
-        if (item.discountable !== false && !item.prescriptionRequired) discountableSubtotal += itemTotal;
-        else nonDiscountableSubtotal += itemTotal;
+        const itemTotal = (item.price || 0) * (item.quantity || 0);
+        
+        if (item.discountable === false) {
+            nonDiscountableSubtotal += itemTotal;
+        } else if (item.prescriptionRequired) {
+            if (hasPrescription) {
+                discountableSubtotal += itemTotal;
+            } else {
+                prescriptionWithoutRxSubtotal += itemTotal;
+            }
+        } else {
+            discountableSubtotal += itemTotal;
+        }
     });
-    
-    const discountAmount = discountableSubtotal * (currentDiscount / 100);
-    const grandTotal = discountableSubtotal + nonDiscountableSubtotal - discountAmount;
-    
-    if (subtotalEl) subtotalEl.textContent = `₱${(discountableSubtotal + nonDiscountableSubtotal).toFixed(2)}`;
-    if (grandTotalEl) grandTotalEl.textContent = `₱${grandTotal.toFixed(2)}`;
+
+    const discountAmount = discountableSubtotal * ((currentDiscount || 0) / 100);
+    const grandTotal = discountableSubtotal + nonDiscountableSubtotal + prescriptionWithoutRxSubtotal - discountAmount;
+
+    if (subtotalEl) {
+        subtotalEl.textContent = `₱${(discountableSubtotal + nonDiscountableSubtotal + prescriptionWithoutRxSubtotal).toFixed(2)}`;
+    }
+    if (grandTotalEl) {
+        grandTotalEl.textContent = `₱${grandTotal.toFixed(2)}`;
+    }
+
+    if (discountInfoEl) {
+        if (currentDiscountType !== 'none') {
+            const discountName = currentDiscountType === 'seniorPWD' ? 'Senior/PWD' : 'YAKAP';
+            const nonDiscountableCount = cart.filter(item => item.discountable === false).length;
+            const prescriptionWithoutRxCount = cart.filter(item => 
+                item.prescriptionRequired === true && !hasPrescription
+            ).length;
+            
+            let discountHtml = `<div class="discount-info-badge ${currentDiscountType}">
+                <i class="fas fa-${currentDiscountType === 'seniorPWD' ? 'id-card' : 'heart'}"></i> 
+                ${discountName} Discount (${currentDiscount || 0}%)
+            `;
+            
+            if (nonDiscountableCount > 0) {
+                discountHtml += `<br><small style="font-size: 11px;">${nonDiscountableCount} item(s) not eligible for discount</small>`;
+            }
+            
+            if (prescriptionWithoutRxCount > 0) {
+                discountHtml += `<br><small style="font-size: 11px; color: #e67e22;"><i class="fas fa-prescription"></i> ${prescriptionWithoutRxCount} prescription item(s) without Rx - no discount applied</small>`;
+            }
+            
+            if (hasPrescription && cart.some(item => item.prescriptionRequired)) {
+                discountHtml += `<br><small style="font-size: 11px; color: #27ae60;"><i class="fas fa-check-circle"></i> Prescription verified for eligible items</small>`;
+            }
+            
+            discountHtml += `</div>`;
+            discountInfoEl.innerHTML = discountHtml;
+        } else {
+            discountInfoEl.innerHTML = '';
+        }
+    }
 }
 
 // ==================== DEDUCT STOCK WITH EXPIRY PRIORITY ====================
@@ -1003,7 +1153,6 @@ async function deductStockWithExpiryPriority(productId, quantityToDeduct) {
         const stockItemsSnapshot = await getDocs(stockItemsQuery);
         if (stockItemsSnapshot.empty) return false;
         
-        // Convert to array and sort
         const stockItems = [];
         stockItemsSnapshot.forEach(doc => {
             const item = doc.data();
@@ -1015,7 +1164,6 @@ async function deductStockWithExpiryPriority(productId, quantityToDeduct) {
             stockItems.push({ id: doc.id, ...item, expiryDate });
         });
         
-        // Sort based on setting
         if (sellExpiringFirst) {
             stockItems.sort((a, b) => {
                 if (a.expiryDate && b.expiryDate) return a.expiryDate - b.expiryDate;
@@ -1032,14 +1180,18 @@ async function deductStockWithExpiryPriority(productId, quantityToDeduct) {
         
         for (const stockItem of stockItems) {
             if (remainingToDeduct <= 0) break;
-            batch.update(doc(db, "stock_items", stockItem.id), { status: 'sold', soldDate: Timestamp.now(), soldBy: loggedInUserId });
+            batch.update(doc(db, "stock_items", stockItem.id), { 
+                status: 'sold', 
+                soldDate: Timestamp.now(), 
+                soldBy: loggedInUserId || '' 
+            });
             remainingToDeduct--;
         }
         
         if (remainingToDeduct > 0) return false;
         
         await batch.commit();
-        stockItemsCache = { data: null, timestamp: 0 }; // Invalidate cache
+        stockItemsCache = { data: null, timestamp: 0 };
         
         return true;
         
@@ -1053,19 +1205,16 @@ async function deductStockWithExpiryPriority(productId, quantityToDeduct) {
 const checkoutBtn = document.getElementById('checkoutBtn');
 if (checkoutBtn) {
     checkoutBtn.addEventListener('click', () => {
-        if (cart.length === 0) { showNotification('Cart is empty!', 'error'); return; }
-        
-        const expiringItems = cart.filter(item => item.expiringCount > 0);
-        if (expiringItems.length > 0 && sellExpiringFirst) {
-            if (!confirm('Sell Expiring First is enabled. These expiring items will be prioritized in the sale. Continue?')) return;
-        } else if (expiringItems.length > 0) {
-            if (!confirm('Some items in your cart have products that are expiring soon. Do you want to continue?')) return;
+        if (cart.length === 0) { 
+            showNotification('Cart is empty!', 'error'); 
+            return; 
         }
         
+        // Check stock availability
         for (const item of cart) {
             const product = products.find(p => p.id === item.id);
-            if (!product || product.stock < item.quantity) {
-                showNotification(`Insufficient stock for ${item.brand}!`, 'error');
+            if (!product || (product.stock || 0) < (item.quantity || 0)) {
+                showNotification(`Insufficient stock for ${item.brand || 'item'}!`, 'error');
                 return;
             }
         }
@@ -1082,8 +1231,14 @@ if (clearCartBtn) {
             cart = [];
             currentDiscountType = 'none';
             currentDiscount = 0;
+            hasPrescription = false;
+            
+            const prescriptionCheckbox = document.getElementById('prescriptionCheckbox');
+            if (prescriptionCheckbox) prescriptionCheckbox.checked = false;
+            
             const noneRadio = document.querySelector('input[name="discountType"][value="none"]');
             if (noneRadio) noneRadio.checked = true;
+            
             updateCartDisplay();
             showNotification('Cart cleared', 'info');
         }
@@ -1100,31 +1255,60 @@ function updateCheckoutModal() {
     
     if (!checkoutItems) return;
     
-    let discountableSubtotal = 0, nonDiscountableSubtotal = 0;
+    let discountableSubtotal = 0;
+    let nonDiscountableSubtotal = 0;
+    let prescriptionWithoutRxSubtotal = 0;
+    
     checkoutItems.innerHTML = '';
     
     const fragment = document.createDocumentFragment();
     
     cart.forEach(item => {
-        const itemTotal = item.price * item.quantity;
-        if (item.discountable !== false && !item.prescriptionRequired) discountableSubtotal += itemTotal;
-        else nonDiscountableSubtotal += itemTotal;
+        const itemTotal = (item.price || 0) * (item.quantity || 0);
+        
+        if (item.discountable === false) {
+            nonDiscountableSubtotal += itemTotal;
+        } else if (item.prescriptionRequired) {
+            if (hasPrescription) {
+                discountableSubtotal += itemTotal;
+            } else {
+                prescriptionWithoutRxSubtotal += itemTotal;
+            }
+        } else {
+            discountableSubtotal += itemTotal;
+        }
         
         const itemDiv = document.createElement('div');
         itemDiv.className = 'checkout-item';
+        
+        let discountStatusBadge = '';
+        if (item.discountable === false) {
+            discountStatusBadge = '<span class="non-discount-tag">No Discount</span>';
+        } else if (item.prescriptionRequired) {
+            if (hasPrescription) {
+                discountStatusBadge = '<span class="prescription-tag verified">Rx Verified - Discount Applied</span>';
+            } else {
+                discountStatusBadge = '<span class="prescription-tag required">Rx Required - Full Price</span>';
+            }
+        }
         
         let expiryNote = '';
         if (item.expiringCount > 0 && sellExpiringFirst) {
             expiryNote = '<small class="expiry-checkout-note">(Expiring items prioritized)</small>';
         }
         
-        const displayName = item.generic ? `${item.brand} (${item.generic})` : item.brand;
+        const displayName = item.generic ? `${item.brand || 'Unknown'} (${item.generic})` : (item.brand || 'Unknown');
         const syrupBadge = item.subcategory === 'syrup' ? ' Syrup' : '';
+        
+        let priceDisplay = `₱${(item.price || 0).toFixed(2)} x ${item.quantity || 0}`;
+        if (item.prescriptionRequired && !hasPrescription) {
+            priceDisplay += ` (Full Price - Rx Required)`;
+        }
         
         itemDiv.innerHTML = `
             <div class="checkout-product-info">
-                <span class="product-name">${displayName}${syrupBadge}</span>
-                <span class="product-detail">₱${item.price.toFixed(2)} x ${item.quantity}</span>
+                <span class="product-name">${displayName}${syrupBadge} ${discountStatusBadge}</span>
+                <span class="product-detail">${priceDisplay}</span>
                 ${expiryNote}
             </div>
             <span class="product-total">₱${itemTotal.toFixed(2)}</span>
@@ -1134,15 +1318,25 @@ function updateCheckoutModal() {
     
     checkoutItems.appendChild(fragment);
     
-    const discountPercentage = currentDiscount;
+    const discountPercentage = currentDiscount || 0;
     const discountAmount = discountableSubtotal * (discountPercentage / 100);
-    const subtotal = discountableSubtotal + nonDiscountableSubtotal;
+    const subtotal = discountableSubtotal + nonDiscountableSubtotal + prescriptionWithoutRxSubtotal;
     const grandTotal = subtotal - discountAmount;
     
     if (checkoutDiscountType) {
-        if (currentDiscountType !== 'none') {
+        if (currentDiscountType !== 'none' && discountableSubtotal > 0) {
             const discountName = currentDiscountType === 'seniorPWD' ? 'Senior/PWD' : 'YAKAP';
-            checkoutDiscountType.innerHTML = `<span class="discount-type-badge ${currentDiscountType}"><i class="fas fa-${currentDiscountType === 'seniorPWD' ? 'id-card' : 'heart'}"></i> ${discountName}</span>`;
+            let prescriptionNote = '';
+            
+            if (cart.some(item => item.prescriptionRequired)) {
+                if (hasPrescription) {
+                    prescriptionNote = ' (Rx Verified - All Eligible Items)';
+                } else {
+                    prescriptionNote = ' (Rx Required Items at Full Price)';
+                }
+            }
+            
+            checkoutDiscountType.innerHTML = `<span class="discount-type-badge ${currentDiscountType}"><i class="fas fa-${currentDiscountType === 'seniorPWD' ? 'id-card' : 'heart'}"></i> ${discountName}${prescriptionNote}</span>`;
         } else {
             checkoutDiscountType.innerHTML = '<span class="discount-type-badge">No Discount</span>';
         }
@@ -1173,21 +1367,43 @@ if (amountTendered) {
 
 function updateChangeAmount() {
     const amount = parseFloat(document.getElementById('amountTendered').value) || 0;
-    const total = parseFloat(document.getElementById('checkoutTotal').textContent.replace('₱', ''));
-    const change = amount - total;
-    document.getElementById('changeAmount').textContent = `₱${change >= 0 ? change.toFixed(2) : '0.00'}`;
+    const totalEl = document.getElementById('checkoutTotal');
+    if (totalEl) {
+        const total = parseFloat(totalEl.textContent.replace('₱', ''));
+        const change = amount - total;
+        const changeEl = document.getElementById('changeAmount');
+        if (changeEl) {
+            changeEl.textContent = `₱${change >= 0 ? change.toFixed(2) : '0.00'}`;
+        }
+    }
 }
+
+// ==================== PROCESS PAYMENT ====================
 
 const processPaymentBtn = document.getElementById('processPaymentBtn');
 if (processPaymentBtn) {
     processPaymentBtn.addEventListener('click', async () => {
-        if (isProcessingPayment) { showNotification('Payment is already being processed...', 'info'); return; }
+        if (isProcessingPayment) { 
+            showNotification('Payment is already being processed...', 'info'); 
+            return; 
+        }
         
-        const paymentMethod = document.getElementById('paymentMethod').value;
-        const amount = parseFloat(document.getElementById('amountTendered').value) || 0;
-        const total = parseFloat(document.getElementById('checkoutTotal').textContent.replace('₱', ''));
+        const paymentMethod = document.getElementById('paymentMethod')?.value || 'cash';
+        const amount = parseFloat(document.getElementById('amountTendered')?.value) || 0;
+        const totalEl = document.getElementById('checkoutTotal');
+        if (!totalEl) return;
+        const total = parseFloat(totalEl.textContent.replace('₱', ''));
         
-        if (amount < total) { showNotification('Insufficient amount!', 'error'); return; }
+        if (amount < total) { 
+            showNotification('Insufficient amount!', 'error'); 
+            return; 
+        }
+        
+        // Validate cart items
+        if (cart.length === 0) {
+            showNotification('Cart is empty!', 'error');
+            return;
+        }
         
         isProcessingPayment = true;
         processPaymentBtn.disabled = true;
@@ -1197,107 +1413,162 @@ if (processPaymentBtn) {
             const invoiceNumber = await generateInvoiceNumber();
             const cashierName = document.getElementById('sidebarUserName')?.textContent || 'Unknown';
             
-            let discountableSubtotal = 0, nonDiscountableSubtotal = 0;
+            // Calculate totals with proper handling for all item types
+            let discountableSubtotal = 0;
+            let nonDiscountableSubtotal = 0;
+            let prescriptionWithoutRxSubtotal = 0;
+            
             cart.forEach(item => {
-                const itemTotal = item.price * item.quantity;
-                if (item.discountable !== false && !item.prescriptionRequired) discountableSubtotal += itemTotal;
-                else nonDiscountableSubtotal += itemTotal;
+                const itemTotal = (item.price || 0) * (item.quantity || 0);
+                
+                if (item.discountable === false) {
+                    nonDiscountableSubtotal += itemTotal;
+                } else if (item.prescriptionRequired) {
+                    if (hasPrescription) {
+                        discountableSubtotal += itemTotal;
+                    } else {
+                        prescriptionWithoutRxSubtotal += itemTotal;
+                    }
+                } else {
+                    discountableSubtotal += itemTotal;
+                }
             });
             
-            const discountPercentage = currentDiscount;
+            const discountPercentage = currentDiscount || 0;
             const discountAmount = discountableSubtotal * (discountPercentage / 100);
-            const subtotal = discountableSubtotal + nonDiscountableSubtotal;
+            const subtotal = discountableSubtotal + nonDiscountableSubtotal + prescriptionWithoutRxSubtotal;
             const totalAmount = subtotal - discountAmount;
             
-            const today = new Date(); today.setHours(0, 0, 0, 0);
-            const thirtyDaysFromNow = new Date(today); thirtyDaysFromNow.setDate(thirtyDaysFromNow.getDate() + 30);
+            const today = new Date(); 
+            today.setHours(0, 0, 0, 0);
             
+            // Process items with safe values
             const processedItems = cart.map(item => {
+                // Safely determine if item was expiring
                 let wasExpiring = false;
-                if (item.expiringItems?.length > 0) wasExpiring = true;
-                else if (item.earliestExpiry) {
+                if (item.expiringItems && item.expiringItems.length > 0) {
+                    wasExpiring = true;
+                } else if (item.earliestExpiry) {
                     const daysUntil = Math.ceil((item.earliestExpiry - today) / (1000 * 60 * 60 * 24));
                     wasExpiring = daysUntil <= 30;
-                } else if (item.expiringCount > 0) wasExpiring = true;
+                } else if (item.expiringCount && item.expiringCount > 0) {
+                    wasExpiring = true;
+                }
                 
-                const itemOriginalTotal = item.price * item.quantity;
+                const itemOriginalTotal = (item.price || 0) * (item.quantity || 0);
                 let itemDiscountedTotal = itemOriginalTotal;
                 let itemDiscountAmount = 0;
                 
-                if ((item.discountable !== false && !item.prescriptionRequired) && discountPercentage > 0) {
-                    const itemShare = itemOriginalTotal / discountableSubtotal;
-                    itemDiscountAmount = discountAmount * itemShare;
-                    itemDiscountedTotal = itemOriginalTotal - itemDiscountAmount;
+                // Determine if this specific item gets discount
+                let isDiscountable = false;
+                if (item.discountable === false) {
+                    isDiscountable = false;
+                } else if (item.prescriptionRequired) {
+                    isDiscountable = hasPrescription;
+                } else {
+                    isDiscountable = true;
+                }
+                
+                // Calculate item discount safely
+                if (isDiscountable && discountPercentage > 0 && discountableSubtotal > 0) {
+                    if (discountableSubtotal > 0) {
+                        const itemShare = itemOriginalTotal / discountableSubtotal;
+                        itemDiscountAmount = discountAmount * itemShare;
+                        itemDiscountedTotal = itemOriginalTotal - itemDiscountAmount;
+                    }
                 }
                 
                 return {
-                    productId: item.id,
-                    brand: item.brand,
-                    generic: item.generic,
-                    subcategory: item.subcategory,
-                    price: item.price,
-                    quantity: item.quantity,
-                    originalTotal: itemOriginalTotal,
-                    discountAmount: itemDiscountAmount,
-                    subtotal: itemDiscountedTotal,
+                    productId: item.id || '',
+                    brand: item.brand || 'Unknown',
+                    generic: item.generic || '',
+                    subcategory: item.subcategory || '',
+                    price: item.price || 0,
+                    quantity: item.quantity || 0,
+                    originalTotal: itemOriginalTotal || 0,
+                    discountAmount: itemDiscountAmount || 0,
+                    subtotal: itemDiscountedTotal || 0,
                     discountable: item.discountable !== false,
-                    prescriptionRequired: item.prescriptionRequired,
-                    wasExpiring: wasExpiring,
+                    prescriptionRequired: item.prescriptionRequired || false,
+                    prescriptionVerified: item.prescriptionRequired ? hasPrescription : false,
+                    wasExpiring: wasExpiring || false,
                     expiryCount: item.expiringCount || 0
                 };
             });
             
+            // Prepare sale data with all fields defined
             const saleData = {
-                invoiceNumber,
-                discountType: currentDiscountType,
-                discountRate: discountPercentage,
+                invoiceNumber: invoiceNumber || `INV-${Date.now()}`,
+                discountType: currentDiscountType || 'none',
+                discountRate: discountPercentage || 0,
+                discountPercentage: discountPercentage || 0,
+                discountAmount: discountAmount || 0,
                 items: processedItems,
-                subtotal,
-                discountableSubtotal,
-                nonDiscountableSubtotal,
-                discountPercentage,
-                discountAmount,
-                total: totalAmount,
-                paymentMethod,
-                amountTendered: amount,
-                change: amount - totalAmount,
+                subtotal: subtotal || 0,
+                discountableSubtotal: discountableSubtotal || 0,
+                nonDiscountableSubtotal: nonDiscountableSubtotal || 0,
+                prescriptionWithoutRxSubtotal: prescriptionWithoutRxSubtotal || 0,
+                total: totalAmount || 0,
+                paymentMethod: paymentMethod || 'cash',
+                amountTendered: amount || 0,
+                change: (amount - totalAmount) || 0,
                 date: Timestamp.now(),
-                cashierId: loggedInUserId,
-                cashierName,
-                sellExpiringFirst,
-                hadExpiringItems: cart.some(item => item.expiringCount > 0)
+                cashierId: loggedInUserId || '',
+                cashierName: cashierName || 'Unknown',
+                sellExpiringFirst: sellExpiringFirst || false,
+                hadExpiringItems: cart.some(item => item.expiringCount > 0) || false,
+                prescriptionVerified: hasPrescription || false,
+                hadPrescriptionRequiredItems: cart.some(item => item.prescriptionRequired === true) || false
             };
             
+            // Process payment and update stock
             await Promise.all([
                 addDoc(collection(db, "sales"), saleData),
                 ...cart.map(item => updateProductStock(item))
             ]);
             
+            // Log activity
             let discountText = '';
             if (currentDiscountType === 'seniorPWD') discountText = ' (Senior/PWD 20%)';
             else if (currentDiscountType === 'yakap') discountText = ' (YAKAP 30%)';
             
+            if (hasPrescription) discountText += ' [Rx Verified]';
+            
             let modeText = sellExpiringFirst ? ' (FEFO - Expiring first)' : ' (FIFO)';
+            
             await addDoc(collection(db, "activities"), {
                 type: 'sale',
                 description: `Sale #${invoiceNumber}: ${cart.length} items for ₱${totalAmount.toFixed(2)}${discountText}${modeText}`,
                 timestamp: Timestamp.now(),
-                userId: loggedInUserId
+                userId: loggedInUserId || ''
             });
             
             showNotification(`Payment successful! Invoice #${invoiceNumber}${discountText}`, 'success');
             
-            // Reset cart
+            // Reset cart and state
             cart = [];
             currentDiscountType = 'none';
             currentDiscount = 0;
+            hasPrescription = false;
+            
+            // Reset UI
             const noneRadio = document.querySelector('input[name="discountType"][value="none"]');
             if (noneRadio) noneRadio.checked = true;
+            
+            const prescriptionCheckbox = document.getElementById('prescriptionCheckbox');
+            if (prescriptionCheckbox) prescriptionCheckbox.checked = false;
+            
             updateCartDisplay();
             
-            document.getElementById('checkoutModal').style.display = 'none';
-            document.getElementById('amountTendered').value = '';
-            document.getElementById('changeAmount').textContent = '₱0.00';
+            // Close modal and reset payment fields
+            const checkoutModal = document.getElementById('checkoutModal');
+            if (checkoutModal) checkoutModal.style.display = 'none';
+            
+            const amountTendered = document.getElementById('amountTendered');
+            if (amountTendered) amountTendered.value = '';
+            
+            const changeAmount = document.getElementById('changeAmount');
+            if (changeAmount) changeAmount.textContent = '₱0.00';
             
             const checkoutNote = document.getElementById('checkoutExpiryNote');
             if (checkoutNote) checkoutNote.remove();
@@ -1313,35 +1584,46 @@ if (processPaymentBtn) {
     });
 }
 
-// Helper function to update product stock
 async function updateProductStock(item) {
-    const productRef = doc(db, "products", item.id);
-    const productDoc = await getDoc(productRef);
-    
-    if (productDoc.exists()) {
-        const currentStock = productDoc.data().stock;
-        const newStock = currentStock - item.quantity;
+    try {
+        if (!item || !item.id) return;
         
-        const deductionSuccess = await deductStockWithExpiryPriority(item.id, item.quantity);
-        if (!deductionSuccess) throw new Error(`Failed to deduct stock for ${item.brand}`);
+        const productRef = doc(db, "products", item.id);
+        const productDoc = await getDoc(productRef);
         
-        await updateDoc(productRef, { stock: newStock, lastUpdated: Timestamp.now() });
-        
-        await addDoc(collection(db, "activities"), {
-            type: 'stock',
-            description: `${item.brand} stock updated: ${currentStock} → ${newStock} (${sellExpiringFirst ? 'FEFO' : 'FIFO'} mode)`,
-            timestamp: Timestamp.now(),
-            userId: loggedInUserId
-        });
-        
-        if (newStock === 0) {
+        if (productDoc.exists()) {
+            const currentStock = productDoc.data().stock || 0;
+            const newStock = Math.max(0, currentStock - (item.quantity || 0));
+            
+            const deductionSuccess = await deductStockWithExpiryPriority(item.id, item.quantity || 0);
+            if (!deductionSuccess) {
+                throw new Error(`Failed to deduct stock for ${item.brand || 'item'}`);
+            }
+            
+            await updateDoc(productRef, { 
+                stock: newStock, 
+                lastUpdated: Timestamp.now() 
+            });
+            
             await addDoc(collection(db, "activities"), {
                 type: 'stock',
-                description: `${item.brand} is now out of stock`,
+                description: `${item.brand || 'Item'} stock updated: ${currentStock} → ${newStock} (${sellExpiringFirst ? 'FEFO' : 'FIFO'} mode)`,
                 timestamp: Timestamp.now(),
-                userId: loggedInUserId
+                userId: loggedInUserId || ''
             });
+            
+            if (newStock === 0) {
+                await addDoc(collection(db, "activities"), {
+                    type: 'stock',
+                    description: `${item.brand || 'Item'} is now out of stock`,
+                    timestamp: Timestamp.now(),
+                    userId: loggedInUserId || ''
+                });
+            }
         }
+    } catch (error) {
+        console.error("Error updating product stock:", error);
+        throw error;
     }
 }
 
@@ -1352,8 +1634,10 @@ async function generateInvoiceNumber() {
         const month = (today.getMonth() + 1).toString().padStart(2, '0');
         const day = today.getDate().toString().padStart(2, '0');
         
-        const startOfDay = new Date(today); startOfDay.setHours(0, 0, 0, 0);
-        const endOfDay = new Date(today); endOfDay.setHours(23, 59, 59, 999);
+        const startOfDay = new Date(today);
+        startOfDay.setHours(0, 0, 0, 0);
+        const endOfDay = new Date(today);
+        endOfDay.setHours(23, 59, 59, 999);
         
         const salesQuery = query(
             collection(db, "sales"),
@@ -1371,7 +1655,6 @@ async function generateInvoiceNumber() {
     }
 }
 
-// Exchange Functions (simplified)
 const exchangeButton = document.getElementById('exchangeButton');
 if (exchangeButton) {
     exchangeButton.addEventListener('click', () => {
@@ -1379,7 +1662,6 @@ if (exchangeButton) {
     });
 }
 
-// Utility Functions
 function showNotification(message, type = 'info') {
     let notification = document.querySelector('.notification-toast');
     if (!notification) {
@@ -1392,13 +1674,18 @@ function showNotification(message, type = 'info') {
     notification.className = `notification-toast ${type}`;
     notification.style.display = 'block';
     
-    setTimeout(() => { notification.style.display = 'none'; }, 3000);
+    setTimeout(() => { 
+        notification.style.display = 'none'; 
+    }, 3000);
 }
 
 function setupEventListeners() {
     document.querySelectorAll('.close').forEach(btn => {
         btn.addEventListener('click', () => {
-            btn.closest('.modal').style.display = 'none';
+            const modal = btn.closest('.modal');
+            if (modal) {
+                modal.style.display = 'none';
+            }
         });
     });
     
@@ -1409,80 +1696,85 @@ function setupEventListeners() {
     });
 }
 
-// Return function
-window.returnSoldItem = async function(stockItemId) {
-    if (!confirm('Return this item to available stock? This will undo the sale.')) return;
-    
-    try {
-        const stockItemRef = doc(db, "stock_items", stockItemId);
-        const stockItemDoc = await getDoc(stockItemRef);
-        
-        if (!stockItemDoc.exists()) { showNotification('Stock item not found', 'error'); return; }
-        
-        const stockItem = stockItemDoc.data();
-        if (stockItem.status !== 'sold') { showNotification('This item is not marked as sold', 'error'); return; }
-        
-        const batch = writeBatch(db);
-        
-        batch.update(stockItemRef, {
-            status: 'available',
-            soldDate: null,
-            soldBy: null,
-            returnedAt: Timestamp.now(),
-            returnedBy: loggedInUserId
-        });
-        
-        if (stockItem.productId) {
-            const availableStockQuery = query(
-                collection(db, "stock_items"),
-                where("productId", "==", stockItem.productId),
-                where("status", "==", "available")
-            );
-            const availableStockSnapshot = await getDocs(availableStockQuery);
-            
-            const productRef = doc(db, "products", stockItem.productId);
-            const productDoc = await getDoc(productRef);
-            
-            if (productDoc.exists()) {
-                batch.update(productRef, {
-                    stock: availableStockSnapshot.size,
-                    lastUpdated: Timestamp.now()
-                });
-            }
-        }
-        
-        const returnRef = doc(collection(db, "returns"));
-        batch.set(returnRef, {
-            stockItemId,
-            productId: stockItem.productId,
-            productName: stockItem.productName,
-            serialNumber: stockItem.serialNumber,
-            wasExpiring: !!stockItem.expiryDate,
-            expiryDate: stockItem.expiryDate || null,
-            date: Timestamp.now(),
-            returnedBy: loggedInUserId
-        });
-        
-        await batch.commit();
-        
-        stockItemsCache = { data: null, timestamp: 0 }; // Invalidate cache
-        
-        showNotification('Item returned to inventory successfully', 'success');
-        
-        if (typeof loadInventory === 'function') loadInventory();
-        
-        const modal = document.getElementById('stockItemsModal');
-        if (modal && modal.style.display === 'block') modal.style.display = 'none';
-        
-    } catch (error) {
-        console.error("Error returning item:", error);
-        showNotification('Error returning item: ' + error.message, 'error');
-    }
-};
-
-// Add CSS for new badges
+// Add CSS for new badges and improved UI
 const style = document.createElement('style');
 style.textContent = `
+    .discount-options {
+        display: flex;
+        flex-direction: column;
+        gap: 10px;
+        padding: 15px;
+        background: #f8f9fa;
+        border-radius: 12px;
+        margin-bottom: 15px;
+    }
+    
+    .discount-option {
+        display: flex;
+        align-items: center;
+        padding: 12px 15px;
+        background: white;
+        border: 2px solid #e9ecef;
+        border-radius: 10px;
+        cursor: pointer;
+        transition: all 0.2s ease;
+    }
+    
+    .discount-option:hover {
+        border-color: #3498db;
+        transform: translateY(-2px);
+        box-shadow: 0 4px 10px rgba(0,0,0,0.05);
+    }
+    
+    .discount-option input[type="radio"] {
+        width: 18px;
+        height: 18px;
+        margin-right: 12px;
+        cursor: pointer;
+        accent-color: #3498db;
+    }
+    
+    .discount-option-label {
+        font-size: 14px;
+        font-weight: 500;
+        color: #2c3e50;
+        display: flex;
+        align-items: center;
+        gap: 8px;
+    }
+    
+    .discount-option-label i {
+        color: #3498db;
+        font-size: 16px;
+    }
+    
+    .discount-info-badge {
+        padding: 12px 15px;
+        border-radius: 10px;
+        font-size: 14px;
+        font-weight: 500;
+        margin-bottom: 15px;
+        animation: slideIn 0.3s ease;
+    }
+    
+    .discount-info-badge.seniorPWD {
+        background: linear-gradient(135deg, #e8f4fd 0%, #d4e6f1 100%);
+        color: #2874a6;
+        border-left: 4px solid #3498db;
+    }
+    
+    .discount-info-badge.yakap {
+        background: linear-gradient(135deg, #fef9e7 0%, #fef5e7 100%);
+        color: #b85e00;
+        border-left: 4px solid #f39c12;
+    }
+    
+    .discount-info-badge.warning {
+        background: #fff3cd;
+        color: #856404;
+        border-left: 4px solid #ffc107;
+    }
+    
     .syrup-badge {
         display: inline-block;
         background: #9b59b6;
@@ -1492,6 +1784,7 @@ style.textContent = `
         border-radius: 4px;
         margin-left: 5px;
     }
+    
     .syrup-badge-small {
         display: inline-block;
         background: #9b59b6;
@@ -1501,6 +1794,7 @@ style.textContent = `
         border-radius: 3px;
         margin-left: 3px;
     }
+    
     .prescription-badge {
         background: #e3f2fd;
         color: #0d47a1;
@@ -1509,13 +1803,134 @@ style.textContent = `
         font-size: 10px;
         display: inline-block;
     }
+    
     .prescription-badge-small {
-        background: #e3f2fd;
-        color: #0d47a1;
         padding: 2px 6px;
         border-radius: 10px;
         font-size: 9px;
         display: inline-block;
+    }
+    
+    .prescription-badge-small.verified {
+        background: #d4edda;
+        color: #155724;
+    }
+    
+    .prescription-badge-small.required {
+        background: #fff3cd;
+        color: #856404;
+    }
+    
+    .prescription-tag {
+        font-size: 9px;
+        padding: 2px 4px;
+        border-radius: 4px;
+        margin-left: 5px;
+    }
+    
+    .prescription-tag.verified {
+        background: #d4edda;
+        color: #155724;
+    }
+    
+    .prescription-tag.required {
+        background: #fff3cd;
+        color: #856404;
+    }
+    
+    .non-discount-tag {
+        background: #fed7d7;
+        color: #742a2a;
+        padding: 2px 6px;
+        border-radius: 4px;
+        font-size: 9px;
+        margin-left: 5px;
+    }
+    
+    .non-discount-badge-small {
+        background: #fed7d7;
+        color: #742a2a;
+        padding: 2px 6px;
+        border-radius: 4px;
+        font-size: 9px;
+        display: inline-block;
+        margin-left: 5px;
+    }
+    
+    .checkout-item {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        padding: 12px;
+        border-bottom: 1px solid #eef2f6;
+        transition: background 0.2s;
+    }
+    
+    .checkout-item:hover {
+        background: #f8fafc;
+    }
+    
+    .checkout-product-info {
+        flex: 1;
+    }
+    
+    .product-name {
+        font-weight: 600;
+        color: #2c3e50;
+        font-size: 14px;
+        display: block;
+        margin-bottom: 4px;
+    }
+    
+    .product-detail {
+        font-size: 12px;
+        color: #7f8c8d;
+        display: block;
+    }
+    
+    .product-total {
+        font-weight: 600;
+        color: #2c3e50;
+        font-size: 14px;
+        margin-left: 15px;
+    }
+    
+    .expiry-checkout-note {
+        display: block;
+        font-size: 10px;
+        color: #e67e22;
+        margin-top: 4px;
+    }
+    
+    .discount-type-badge {
+        display: inline-flex;
+        align-items: center;
+        gap: 5px;
+        padding: 4px 10px;
+        border-radius: 20px;
+        font-size: 12px;
+        font-weight: 500;
+    }
+    
+    .discount-type-badge.seniorPWD {
+        background: #e8f4fd;
+        color: #2874a6;
+    }
+    
+    .discount-type-badge.yakap {
+        background: #fef9e7;
+        color: #b85e00;
+    }
+    
+    @keyframes slideIn {
+        from {
+            opacity: 0;
+            transform: translateY(-10px);
+        }
+        to {
+            opacity: 1;
+            transform: translateY(0);
+        }
     }
 `;
 document.head.appendChild(style);
