@@ -47,7 +47,7 @@ body {
     font-size: 1.9rem;
     font-weight: 600;
     letter-spacing: -0.02em;
-    color: #0b2b3b;
+    color: #090174;
     text-align: center;
     margin-bottom: 1.5rem;
 }
@@ -62,13 +62,13 @@ body {
     left: 1rem;
     top: 50%;
     transform: translateY(-50%);
-    color: #1e3b4b;
+    color: #090174;
     font-size: 1.1rem;
     z-index: 1;
 }
 
 .input-group input {
-    color: #0a2a38;
+    color: #090174;
     width: 100%;
     background-color: #f2f7fb;
     border: 1.5px solid #cbdae6;
@@ -100,13 +100,13 @@ body {
 
 .recover a {
     text-decoration: none;
-    color: #1b6b93;
+    color: #090174;
     font-weight: 500;
     border-bottom: 1px dashed #9bc9de;
 }
 
 .recover a:hover {
-    color: #0a4055;
+    color: #090174;
     border-bottom-style: solid;
 }
 
@@ -117,7 +117,7 @@ button {
     outline: none;
     border: none;
     width: 100%;
-    background: #11698c;
+    background: #090174;
     color: white;
     cursor: pointer;
     transition: background 0.2s, transform 0.1s, box-shadow 0.2s;
@@ -153,7 +153,7 @@ button:active {
 }
 
 .icons i {
-    color: #11698c;
+    color: #090174;
     padding: 0.8rem 1.5rem;
     border-radius: 40px;
     font-size: 1.5rem;
@@ -165,9 +165,9 @@ button:active {
 }
 
 .icons i:hover {
-    background: #11698c;
+    background: #090174;
     color: white;
-    border-color: #11698c;
+    border-color: #090174;
     transform: translateY(-2px);
 }
 
@@ -314,7 +314,7 @@ button:active {
 }
 
 .nav-item.active {
-    background: #3498db;
+    background: #090174;
     color: white;
     border-left: 4px solid #f1c40f;
 }
@@ -439,6 +439,7 @@ button:active {
     grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
     gap: 20px;
     margin-bottom: 30px;
+    
 }
 
 .stat-card {
@@ -448,12 +449,13 @@ button:active {
     box-shadow: 0 2px 10px rgba(0,0,0,0.1);
     display: flex;
     align-items: center;
+    
 }
 
 .stat-icon {
     width: 60px;
     height: 60px;
-    background: linear-gradient(135deg, #3498db, #2980b9);
+      background-color: 090174;
     border-radius: 10px;
     display: flex;
     align-items: center;
@@ -464,12 +466,14 @@ button:active {
 .stat-icon i {
     font-size: 30px;
     color: white;
+    
 }
 
 .stat-info h3 {
     margin: 0;
     font-size: 14px;
     color: #7f8c8d;
+    
 }
 
 .stat-info p {
@@ -503,7 +507,7 @@ button:active {
     display: flex;
     align-items: center;
     padding: 10px;
-    border-bottom: 1px solid #ecf0f1;
+    border-bottom: 1px solid #090174;
 }
 
 .activity-icon {
@@ -515,7 +519,7 @@ button:active {
     align-items: center;
     justify-content: center;
     margin-right: 15px;
-    color: #3498db;
+    color: #090174;
 }
 
 .activity-details p {
@@ -557,7 +561,7 @@ button:active {
 }
 
 .btn-primary:hover {
-    background: #2980b9;
+    background: #090174;
     transform: translateY(-2px);
     box-shadow: 0 5px 15px rgba(52, 152, 219, 0.3);
 }
@@ -750,7 +754,7 @@ td {
 }
 
 .add-to-cart {
-    background: #3498db;
+    background: #090174;
     color: white;
     border: none;
     padding: 8px;
@@ -1473,7 +1477,7 @@ padding-left: 90%;
 }
 
 .notification-toast.info {
-    background: #3498db;
+    background: #090174;
 }
 
 @keyframes slideIn {
@@ -8573,7 +8577,7 @@ td, tr, tbody, table {
 .stat-icon {
     width: 50px;
     height: 50px;
-    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+   background: #090174;
     border-radius: 12px;
     display: flex;
     align-items: center;
@@ -8683,7 +8687,7 @@ td, tr, tbody, table {
 }
 
 .btn-primary {
-    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+    background: linear-gradient(135deg, #090174 0%, #090174 100%);
     color: white;
 }
 
@@ -9360,7 +9364,7 @@ td, tr, tbody, table {
 
 /* Stat card for total discount */
 .stat-card .stat-icon i.fa-tags {
-    color: #e67e22;
+    color: #090174;
 }
 
 /* Mobile responsive */
