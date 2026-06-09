@@ -137,11 +137,30 @@ async function downloadSalesPDF() {
         rows.forEach(row => {
             const cells = row.querySelectorAll('td');
             if (cells.length >= 7) {
+                // Extract invoice number, removing any inner HTML elements like badges
+                const invoiceCell = cells[0];
+                const invoiceSpan = invoiceCell.querySelector('.invoice-badge');
+                const invoiceNumber = invoiceSpan ? invoiceSpan.textContent.trim() : invoiceCell.textContent.replace(/\s+/g, ' ').trim();
+                
+                // Extract total - clean it properly
+                let totalText = cells[3].textContent.trim();
+                // Remove ₱ sign and any other non-numeric characters except decimal and minus
+                let cleanTotal = totalText.replace(/[^0-9.-]/g, '');
+                // If empty or NaN, try to extract from inner elements
+                if (!cleanTotal || isNaN(parseFloat(cleanTotal))) {
+                    const totalSpan = cells[3].querySelector('.total-amount');
+                    if (totalSpan) {
+                        cleanTotal = totalSpan.textContent.replace(/[^0-9.-]/g, '');
+                    }
+                }
+                const totalValue = parseFloat(cleanTotal) || 0;
+                
                 salesData.push({
-                    invoice: cells[0].textContent.replace(/\s+/g, ' ').trim(),
+                    invoice: invoiceNumber,
                     date: cells[1].textContent.trim(),
                     items: cells[2].textContent.trim(),
-                    total: cells[3].textContent.trim(),
+                    total: totalValue,
+                    totalDisplay: `₱${totalValue.toFixed(2)}`,
                     payment: cells[4].textContent.trim(),
                     cashier: cells[5].textContent.trim()
                 });
@@ -151,8 +170,7 @@ async function downloadSalesPDF() {
         // Calculate totals
         let totalSales = 0;
         salesData.forEach(sale => {
-            const total = parseFloat(sale.total.replace('₱', '').replace(',', ''));
-            if (!isNaN(total)) totalSales += total;
+            totalSales += sale.total;
         });
         
         // Create PDF document
@@ -193,18 +211,18 @@ async function downloadSalesPDF() {
         doc.text(`Number of Transactions: ${salesData.length}`, margin, yPos);
         yPos += 15;
         
-        // Prepare table data
-        const tableHeaders = [['Invoice #', 'Date', 'Items', 'Total', 'Payment', 'Cashier']];
+        // Prepare table data - use clean numeric values for proper formatting
+        const tableHeaders = [['Invoice #', 'Date', 'Items', 'Total (₱)', 'Payment', 'Cashier']];
         const tableRows = salesData.map(sale => [
             sale.invoice,
             sale.date,
             sale.items.substring(0, 50) + (sale.items.length > 50 ? '...' : ''),
-            sale.total,
+            sale.total.toFixed(2),  // Just the number without ₱ sign for proper alignment
             sale.payment,
             sale.cashier
         ]);
         
-        // Add table
+        // Add table with proper number formatting
         doc.autoTable({
             head: tableHeaders,
             body: tableRows,
@@ -218,17 +236,28 @@ async function downloadSalesPDF() {
             styles: {
                 fontSize: 9,
                 cellPadding: 3,
-                overflow: 'linebreak'
+                overflow: 'linebreak',
+                cellWidth: 'wrap'
             },
             columnStyles: {
                 0: { cellWidth: 35 },
                 1: { cellWidth: 35 },
                 2: { cellWidth: 70 },
-                3: { cellWidth: 25, halign: 'right' },
+                3: { cellWidth: 25, halign: 'right' },  // Right-align numbers
                 4: { cellWidth: 30 },
                 5: { cellWidth: 35 }
             },
-            margin: { left: margin, right: margin }
+            margin: { left: margin, right: margin },
+            // Add custom formatting for number column
+            didParseCell: function(data) {
+                if (data.column.index === 3 && data.cell.text.length > 0) {
+                    // Ensure the number is properly formatted
+                    const num = parseFloat(data.cell.text);
+                    if (!isNaN(num)) {
+                        data.cell.text = [num.toFixed(2)];
+                    }
+                }
+            }
         });
         
         // Add summary at the bottom
@@ -240,7 +269,8 @@ async function downloadSalesPDF() {
         
         doc.setFont('helvetica', 'normal');
         doc.text(`Total Sales Amount: ₱${totalSales.toFixed(2)}`, margin + 30, finalY);
-        doc.text(`Average Sale: ₱${(totalSales / salesData.length).toFixed(2)}`, margin + 80, finalY);
+        const avgSale = salesData.length > 0 ? totalSales / salesData.length : 0;
+        doc.text(`Average Sale: ₱${avgSale.toFixed(2)}`, margin + 80, finalY);
         
         // Add footer with page numbers
         const pageCount = doc.internal.getNumberOfPages();
@@ -444,7 +474,7 @@ async function loadSalesHistory(sortOrder = 'desc') {
         console.error("Error loading sales history:", error);
         const tableBody = document.getElementById('salesTableBody');
         if (tableBody) {
-            tableBody.innerHTML = '<tr><td colspan="7" class="error">Error loading sales</td></tr>';
+            tableBody.innerHTML = '</table><td colspan="7" class="error">Error loading sales</td></tr>';
         }
     }
 }
